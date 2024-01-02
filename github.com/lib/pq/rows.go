@@ -51,6 +51,9 @@ func (fd fieldDesc) Length() (length int64, ok bool) {
 	case oid.T_text:
 		return math.MaxInt64, true
 	case oid.T_varchar, oid.T_bpchar, oid.T_bytea, oid.T_char, oid.Oid(91002), oid.Oid(91004), oid.Oid(91006):
+		if fd.Mod == -1 {
+			return math.MaxInt64, true
+		}
 		return int64(fd.Mod - headerSize), true
 	default:
 		return 0, false
