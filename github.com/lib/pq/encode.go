@@ -512,12 +512,9 @@ func FormatTimestamp(t time.Time) []byte {
 func parseBytea(s []byte) (result []byte, err error) {
 	if len(s) >= 2 && bytes.Equal(s[:2], []byte("\\x")) {
 		// bytea_output = hex
-		s = s[2:] // trim off leading "\\x"
-		result = make([]byte, hex.DecodedLen(len(s)))
-		_, err := hex.Decode(result, s)
-		if err != nil {
-			return nil, err
-		}
+		// directly returning bytes without decoding,
+		// maintaining the same behavior as PostgreSQL.
+		return s, nil
 	} else {
 		// bytea_output = escape
 		for len(s) > 0 {
