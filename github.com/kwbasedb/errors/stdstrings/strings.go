@@ -17,12 +17,9 @@ package stdstrings
 // IssueReferral is the additional hint text provided to ask users for further actions.
 const IssueReferral = `
 
-Please check the public issue tracker to check whether this problem is
-already tracked. If you cannot find it there, please report the error
-with details by creating a new issue.
-
-If you would rather not post publicly, please contact us directly
-using the support form.
+Please check our website to find out whether this problem is already 
+tracked.  If you cannot find it there, please contact us with the 
+available channels published on website.
 
 We appreciate your feedback.
 `
