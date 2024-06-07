@@ -17,10 +17,7 @@ package errors
 import "github.com/kwbasedb/errors/issuelink"
 
 // WithIssueLink forwards a definition.
-func WithIssueLink(err error, issue IssueLink) error {
-	// disable the real issue link to avoid potential legal/abuse risks
-	return err /*issuelink.WithIssueLink(err, issue)*/
-}
+func WithIssueLink(err error, issue IssueLink) error { return issuelink.WithIssueLink(err, issue) }
 
 // IssueLink forwards a definition.
 type IssueLink = issuelink.IssueLink
