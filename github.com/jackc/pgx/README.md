@@ -83,7 +83,7 @@ skip tests for connection types that are not configured.
 
 To setup the normal test environment, first install these dependencies:
 
-    go get github.com/kwbasedb/apd
+    go get github.com/cockroachdb/apd
     go get github.com/gofrs/uuid
     go get github.com/hashicorp/go-version
     go get github.com/jackc/fake
