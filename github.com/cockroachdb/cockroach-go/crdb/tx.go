@@ -35,7 +35,7 @@ import (
 // to the SAVEPOINT. In that case, we return a TxnRestartError.
 //
 // For more information about CockroachDB's transaction model see
-// https://kwbaselabs.com/docs/stable/transactions.html.
+// https://cockroachlabs.com/docs/stable/transactions.html.
 //
 // NOTE: the supplied fn closure should not have external side
 // effects beyond changes to the database.
@@ -45,26 +45,25 @@ import (
 // following snippet, the original retryable error will be masked by the call to
 // fmt.Errorf, and the transaction will not be automatically retried.
 //
-//    kwdb.ExecuteTx(ctx, db, txopts, func (tx *sql.Tx) error {
-//        if err := tx.ExecContext(ctx, "UPDATE..."); err != nil {
-//            return fmt.Errorf("updating record: %s", err)
-//        }
-//        return nil
-//    })
+//	kwdb.ExecuteTx(ctx, db, txopts, func (tx *sql.Tx) error {
+//	    if err := tx.ExecContext(ctx, "UPDATE..."); err != nil {
+//	        return fmt.Errorf("updating record: %s", err)
+//	    }
+//	    return nil
+//	})
 //
 // Instead, add context by returning an error that implements the ErrorCauser
 // interface. Either create a custom error type that implements ErrorCauser or
 // use a helper function that does so automatically, like pkg/errors.Wrap:
 //
-//    import "github.com/pkg/errors"
+//	import "github.com/pkg/errors"
 //
-//    kwdb.ExecuteTx(ctx, db, txopts, func (tx *sql.Tx) error {
-//        if err := tx.ExecContext(ctx, "UPDATE..."); err != nil {
-//            return errors.Wrap(err, "updating record")
-//        }
-//        return nil
-//    })
-//
+//	kwdb.ExecuteTx(ctx, db, txopts, func (tx *sql.Tx) error {
+//	    if err := tx.ExecContext(ctx, "UPDATE..."); err != nil {
+//	        return errors.Wrap(err, "updating record")
+//	    }
+//	    return nil
+//	})
 func ExecuteTx(
 	ctx context.Context, db *sql.DB, txopts *sql.TxOptions, fn func(*sql.Tx) error,
 ) error {

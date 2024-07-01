@@ -43,6 +43,6 @@ matrix:
 notifications:
   email:
     recipients:
-      - peter@kwbaselabs.com
+      - peter@cockroachlabs.com
     on_success: never
     on_failure: always
