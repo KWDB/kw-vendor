@@ -346,4 +346,6 @@ var TypeName = map[Oid]string{
 	T__varbytea:         "_VARBYTEA",
 	Oid(91002):					"NCHAR",
 	Oid(91004):					"NVARCHAR",
+	Oid(91008):					"GEOMETRY",
+	Oid(91009):					"_GEOMETRY",
 }
