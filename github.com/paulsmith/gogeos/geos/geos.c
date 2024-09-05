@@ -24,13 +24,21 @@ static GEOSWKTWriter* (*GEOSWKTWriter_create_r_func)(GEOSContextHandle_t handle)
 static void (*GEOSWKTWriter_destroy_r_func)(GEOSContextHandle_t handle, GEOSWKTWriter* writer) = NULL;
 static char* (*GEOSWKTWriter_write_r_func)(GEOSContextHandle_t handle, GEOSWKTWriter* writer, const GEOSGeometry* g) = NULL;
 
-// 初始化 libgeos_c.so
+// init libgeos_c.so
 void* initGEOSLibrary() {
     pthread_mutex_lock(&geosLibraryMutex);
     geos_library = dlopen("libgeos_c.so", RTLD_NOW | RTLD_GLOBAL);
     if (geos_library == NULL) {
-        // 如果加载 libgeos_c.so 失败，尝试加载 libgeos.so
+        // if load libgeos_c.so failed，load libgeos.so
         geos_library = dlopen("libgeos.so", RTLD_NOW | RTLD_GLOBAL);
+    }
+    if (geos_library == NULL) {
+        // if load libgeos.so failed，load libgeos_c.so.1
+        geos_library = dlopen("libgeos_c.so.1", RTLD_NOW | RTLD_GLOBAL);
+    }
+    if (geos_library == NULL) {
+        // if load libgeos_c.so.1 failed，load libgeos_c.so.2
+        geos_library = dlopen("libgeos_c.so.2", RTLD_NOW | RTLD_GLOBAL);
     }
 
     initGEOS_r_func = dlsym(geos_library, "initGEOS_r");
@@ -55,7 +63,7 @@ void* initGEOSLibrary() {
     return geos_library;
 }
 
-// 获取 GEOS 版本
+// get GEOS version
 const char* loadGEOSVersion(enum FunctionLoad* status) {
     typedef const char* (*GEOSVersionFunc)();
     GEOSVersionFunc versionFunc = (GEOSVersionFunc)dlsym(geos_library, "GEOSversion");
