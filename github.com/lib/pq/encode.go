@@ -93,9 +93,6 @@ func binaryDecode(parameterStatus *parameterStatus, s []byte, typ oid.Oid) inter
 func textDecode(parameterStatus *parameterStatus, s []byte, typ oid.Oid) interface{} {
 	switch typ {
 	case oid.T_char, oid.T_varchar, oid.T_text:
-		if parameterStatus.clientEncoding == "gbk" || parameterStatus.clientEncoding == "gb18030" {
-			return s
-		}
 		return string(s)
 	case oid.T_bytea, oid.T_varbytea:
 		b, err := parseBytea(s)
