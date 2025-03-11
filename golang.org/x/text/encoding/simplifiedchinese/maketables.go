@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build ignore
 // +build ignore
 
 package main
@@ -54,7 +55,7 @@ func printGB18030() {
 }
 
 func printGBK() {
-	res, err := http.Get("http://encoding.spec.whatwg.org/index-gbk.txt")
+	res, err := http.Get("http://encoding.spec.whatwg.org/index-gb18030.txt")
 	if err != nil {
 		log.Fatalf("Get: %v", err)
 	}
@@ -90,7 +91,7 @@ func printGBK() {
 	}
 
 	fmt.Printf("// decode is the decoding table from GBK code to Unicode.\n")
-	fmt.Printf("// It is defined at http://encoding.spec.whatwg.org/index-gbk.txt\n")
+	fmt.Printf("// It is defined at http://encoding.spec.whatwg.org/index-gb18030.txt\n")
 	fmt.Printf("var decode = [...]uint16{\n")
 	for i, v := range mapping {
 		if v != 0 {
