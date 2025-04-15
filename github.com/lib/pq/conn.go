@@ -60,6 +60,9 @@ type parameterStatus struct {
 	// the current location based on the TimeZone value of the session, if
 	// available
 	currentLocation *time.Location
+
+	// client_encoding records encoding format
+	client_encoding string
 }
 
 type transactionStatus byte
@@ -954,13 +957,6 @@ func (cn *conn) recvMessage(r *readBuf) (byte, error) {
 	if err != nil {
 		return 0, err
 	}
-	sss := string(y)
-	if strings.Contains(sss, "client_encoding") && strings.Contains(sss, "gb") {
-		if t == 'S' {
-			y = y[len(y)-4:]
-			t = 'C'
-		}
-	}
 	*r = y
 	return t, nil
 }
@@ -1649,6 +1645,12 @@ func (cn *conn) processParameterStatus(r *readBuf) {
 
 	case "TimeZone":
 		cn.parameterStatus.currentLocation, err = time.LoadLocation(r.string())
+		if err != nil {
+			cn.parameterStatus.currentLocation = nil
+		}
+
+	case "client_encoding":
+		cn.parameterStatus.client_encoding = r.string()
 		if err != nil {
 			cn.parameterStatus.currentLocation = nil
 		}
