@@ -1651,9 +1651,6 @@ func (cn *conn) processParameterStatus(r *readBuf) {
 
 	case "client_encoding":
 		cn.parameterStatus.client_encoding = r.string()
-		if err != nil {
-			cn.parameterStatus.currentLocation = nil
-		}
 
 	default:
 		// ignore
