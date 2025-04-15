@@ -60,6 +60,9 @@ type parameterStatus struct {
 	// the current location based on the TimeZone value of the session, if
 	// available
 	currentLocation *time.Location
+
+	// client_encoding records encoding format
+	client_encoding string
 }
 
 type transactionStatus byte
@@ -1017,19 +1020,19 @@ func (cn *conn) recv1() (t byte, r *readBuf) {
 }
 
 func (cn *conn) ssl(o values) error {
-        var upgrade func(net.Conn) (net.Conn, error)
-        var err error
-        if o["ssl_max_protocol_version"] == "TLCPv1.1" {
-                upgrade, err = tlcp(o)
-                if err != nil {
-                        return err
-                }
-        } else {
-               upgrade, err = ssl(o)
-               if err != nil {
-                       return err
-               }
-        }
+	var upgrade func(net.Conn) (net.Conn, error)
+	var err error
+	if o["ssl_max_protocol_version"] == "TLCPv1.1" {
+		upgrade, err = tlcp(o)
+		if err != nil {
+			return err
+		}
+	} else {
+		upgrade, err = ssl(o)
+		if err != nil {
+			return err
+		}
+	}
 
 	if upgrade == nil {
 		// Nothing to do
@@ -1509,10 +1512,10 @@ func (rs *rows) NextResultSet() error {
 // QuoteIdentifier quotes an "identifier" (e.g. a table or a column name) to be
 // used as part of an SQL statement.  For example:
 //
-//    tblname := "my_table"
-//    data := "my_data"
-//    quoted := pq.QuoteIdentifier(tblname)
-//    err := db.Exec(fmt.Sprintf("INSERT INTO %s VALUES ($1)", quoted), data)
+//	tblname := "my_table"
+//	data := "my_data"
+//	quoted := pq.QuoteIdentifier(tblname)
+//	err := db.Exec(fmt.Sprintf("INSERT INTO %s VALUES ($1)", quoted), data)
 //
 // Any double quotes in name will be escaped.  The quoted identifier will be
 // case sensitive when used in a query.  If the input string contains a zero
@@ -1529,8 +1532,8 @@ func QuoteIdentifier(name string) string {
 // to DDL and other statements that do not accept parameters) to be used as part
 // of an SQL statement.  For example:
 //
-//    exp_date := pq.QuoteLiteral("2023-01-05 15:00:00Z")
-//    err := db.Exec(fmt.Sprintf("CREATE ROLE my_user VALID UNTIL %s", exp_date))
+//	exp_date := pq.QuoteLiteral("2023-01-05 15:00:00Z")
+//	err := db.Exec(fmt.Sprintf("CREATE ROLE my_user VALID UNTIL %s", exp_date))
 //
 // Any single quotes in name will be escaped. Any backslashes (i.e. "\") will be
 // replaced by two backslashes (i.e. "\\") and the C-style escape identifier
@@ -1645,6 +1648,9 @@ func (cn *conn) processParameterStatus(r *readBuf) {
 		if err != nil {
 			cn.parameterStatus.currentLocation = nil
 		}
+
+	case "client_encoding":
+		cn.parameterStatus.client_encoding = r.string()
 
 	default:
 		// ignore
