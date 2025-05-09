@@ -1022,16 +1022,9 @@ func (cn *conn) recv1() (t byte, r *readBuf) {
 func (cn *conn) ssl(o values) error {
 	var upgrade func(net.Conn) (net.Conn, error)
 	var err error
-	if o["ssl_max_protocol_version"] == "TLCPv1.1" {
-		upgrade, err = tlcp(o)
-		if err != nil {
-			return err
-		}
-	} else {
-		upgrade, err = ssl(o)
-		if err != nil {
-			return err
-		}
+	upgrade, err = ssl(o)
+	if err != nil {
+		return err
 	}
 
 	if upgrade == nil {
