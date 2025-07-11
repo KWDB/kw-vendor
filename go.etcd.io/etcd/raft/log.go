@@ -200,9 +200,14 @@ func (l *raftLog) commitTo(tocommit uint64) {
 	// never decrease commit
 	if l.committed < tocommit {
 		if l.lastIndex() < tocommit {
-			l.logger.Panicf("tocommit(%d) is out of range [lastIndex(%d)]. Was the raft log corrupted, truncated, or lost?", tocommit, l.lastIndex())
+			if l.storage.Inconsistent() {
+				l.logger.Warningf("tocommit(%d) is out of range [lastIndex(%d)]. adjust it", tocommit, l.lastIndex())
+			} else {
+				l.logger.Panicf("tocommit(%d) is out of range [lastIndex(%d)]. Was the raft log corrupted, truncated, or lost?", tocommit, l.lastIndex())
+			}
+		} else {
+			l.committed = tocommit
 		}
-		l.committed = tocommit
 	}
 }
 

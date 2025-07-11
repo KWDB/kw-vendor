@@ -69,6 +69,8 @@ type Storage interface {
 	// so raft state machine could know that Storage needs some time to prepare
 	// snapshot and call Snapshot later.
 	Snapshot() (pb.Snapshot, error)
+	// Inconsistent returns whether the raft log is inconsistent.
+	Inconsistent() bool
 }
 
 // MemoryStorage implements the Storage interface backed by an
@@ -167,6 +169,11 @@ func (ms *MemoryStorage) Snapshot() (pb.Snapshot, error) {
 	ms.Lock()
 	defer ms.Unlock()
 	return ms.snapshot, nil
+}
+
+// Inconsistent implements the Storage interface.
+func (ms *MemoryStorage) Inconsistent() bool {
+	return false
 }
 
 // ApplySnapshot overwrites the contents of this Storage object with
