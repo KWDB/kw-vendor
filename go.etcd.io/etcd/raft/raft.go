@@ -1180,6 +1180,9 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 		}
 	case pb.MsgHeartbeatResp:
+		if m.Reject {
+			pr.Match = m.RejectHint
+		}
 		pr.RecentActive = true
 		pr.ProbeSent = false
 
@@ -1394,7 +1397,11 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 
 func (r *raft) handleHeartbeat(m pb.Message) {
 	r.raftLog.commitTo(m.Commit)
-	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context})
+	if r.raftLog.committed < m.Commit {
+		r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context, Reject: true, RejectHint: r.raftLog.committed})
+	} else {
+		r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context})
+	}
 }
 
 func (r *raft) handleSnapshot(m pb.Message) {
