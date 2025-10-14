@@ -141,6 +141,9 @@ type scanningState struct {
 }
 
 func (s *scanningState) scan(line string) (string, error) {
+	line = strings.ReplaceAll(line, "{", "")
+	line = strings.ReplaceAll(line, "}", "")
+	line = strings.ReplaceAll(line, "?", "")
 	if line == "\n" || line == "\r\n" {
 		if s.goroutine != nil {
 			// goroutines are separated by an empty line.
