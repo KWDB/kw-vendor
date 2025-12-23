@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/user"
@@ -23,6 +24,8 @@ import (
 
 	"github.com/lib/pq/oid"
 	"github.com/lib/pq/scram"
+	"github.com/pierrec/lz4"
+	"github.com/golang/snappy"
 )
 
 // Common error types
@@ -676,6 +679,14 @@ func (cn *conn) simpleQuery(q string) (res *rows, err error) {
 			res = nil
 			err = parseError(r)
 		case 'D':
+			if res == nil {
+				cn.bad = true
+				errorf("unexpected DataRow in simple query execution")
+			}
+			// the query didn't fail; kick off to Next
+			cn.saveMessage(t, r)
+			return
+		case 'K':
 			if res == nil {
 				cn.bad = true
 				errorf("unexpected DataRow in simple query execution")
@@ -1391,6 +1402,10 @@ type rows struct {
 	rb     readBuf
 	result driver.Result
 	tag    string
+	// is multy row 'K'
+	canMulRow bool
+	trunk     KwDataChunk
+	totalRow  int
 
 	next *rowsHeader
 }
@@ -1432,6 +1447,130 @@ func (rs *rows) Tag() string {
 	return rs.tag
 }
 
+type KwDataChunk struct {
+	data           *readBuf
+	rowNum         int
+	colNum         int
+	rowSize        int
+	storageLen     []uint32
+	colBlockOffset []uint32
+	len            int
+	currentLine    uint32
+	CompressionType int
+	ResultRows  [][]driver.Value
+}
+
+func trimCString(s string) string {
+	if idx := strings.IndexByte(s, 0); idx >= 0 {
+		return s[:idx]
+	}
+	return s
+}
+
+func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, row uint32, col int, typ oid.Oid, f format, length *int64) interface{} {
+	start := row*kdc.storageLen[col] + kdc.colBlockOffset[col]
+	if int(start) > len(*kdc.data) {
+
+	}
+	s := (*kdc.data)[start : start+kdc.storageLen[col]]
+	switch typ {
+	case oid.T_timestamptz, oid.T_timestamp, oid.T_date:
+		timestamp := int64(binary.LittleEndian.Uint64(s))
+		t := time.Unix(0, timestamp*int64(time.Millisecond))
+		return FormatTimestamp(t)
+	case oid.T_time, oid.T_timetz:
+		micros := int64(binary.LittleEndian.Uint64(s))
+		return time.Unix(0, micros*1000).UTC() // 纳秒精度
+	case oid.T_bool:
+		return s[0] == 1
+	case oid.T_float4:
+		return math.Float32frombits(binary.LittleEndian.Uint32(s))
+	case oid.T_float8:
+		return math.Float64frombits(binary.LittleEndian.Uint64(s))
+	case oid.T_varchar, oid.T_text, oid.T_bpchar:
+		result := trimCString(string(s[2:]))
+		return result
+	case oid.T_int2: // int16
+		return int64(int16(binary.LittleEndian.Uint16(s)))
+	case oid.T_int4:
+		return int64(int32(binary.LittleEndian.Uint32(s)))
+	case oid.T_int8:
+		return int64(binary.LittleEndian.Uint64(s))
+	case oid.T_interval:
+		// 结构: [time:8][days:4][months:4]
+		micros := int64(binary.LittleEndian.Uint64(s[0:8]))
+		days := int32(binary.LittleEndian.Uint32(s[8:12]))
+		months := int32(binary.LittleEndian.Uint32(s[12:16]))
+
+		duration := time.Duration(micros) * time.Microsecond
+		return fmt.Sprintf("%d months %d days %s", months, days, duration)
+
+	default:
+		return decode(parameterStatus, s, typ, formatBinary)
+	}
+}
+
+func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, row uint32, col int, typ oid.Oid, f format, length *int64, s []byte) interface{} {
+	switch typ {
+	case oid.T_timestamptz, oid.T_timestamp, oid.T_date:
+		timestamp := int64(binary.LittleEndian.Uint64(s))
+		t := time.Unix(0, timestamp*int64(time.Millisecond))
+		return FormatTimestamp(t)
+	case oid.T_time, oid.T_timetz:
+		micros := int64(binary.LittleEndian.Uint64(s))
+		return time.Unix(0, micros*1000).UTC() // 纳秒精度
+	case oid.T_bool:
+		return s[0] == 1
+	case oid.T_float4:
+		return math.Float32frombits(binary.LittleEndian.Uint32(s))
+	case oid.T_float8:
+		return math.Float64frombits(binary.LittleEndian.Uint64(s))
+	case oid.T_varchar, oid.T_text, oid.T_bpchar:
+		result := trimCString(string(s[2:]))
+		return result
+	case oid.T_int2: // int16
+		return int64(int16(binary.LittleEndian.Uint16(s)))
+	case oid.T_int4:
+		return int64(int32(binary.LittleEndian.Uint32(s)))
+	case oid.T_int8:
+		return int64(binary.LittleEndian.Uint64(s))
+	case oid.T_interval:
+		// 结构: [time:8][days:4][months:4]
+		micros := int64(binary.LittleEndian.Uint64(s[0:8]))
+		days := int32(binary.LittleEndian.Uint32(s[8:12]))
+		months := int32(binary.LittleEndian.Uint32(s[12:16]))
+
+		duration := time.Duration(micros) * time.Microsecond
+		return fmt.Sprintf("%d months %d days %s", months, days, duration)
+		
+	default:
+		return decode(parameterStatus, s, typ, formatBinary)
+	}
+}
+
+func (kdc *KwDataChunk) Next(parameterStatus *parameterStatus, head *rowsHeader, dest []driver.Value) (err error) {
+	if kdc.colNum <= len(dest) {
+		dest = dest[:kdc.colNum]
+	}
+	// get one row from bufffer
+	for i := range dest {
+		dest[i] = kdc.GetData(parameterStatus, kdc.currentLine, i, head.colTyps[i].OID, head.colFmts[i], nil)
+	}
+	kdc.currentLine++
+	return
+}
+
+func (kdc *KwDataChunk) Eof() bool {
+	return kdc.currentLine >= uint32(kdc.rowNum)
+}
+
+func (kdc *KwDataChunk) Reset() {
+	kdc.data = nil
+	kdc.currentLine = 0
+	kdc.colBlockOffset = nil
+	kdc.storageLen = nil
+}
+
 func (rs *rows) Next(dest []driver.Value) (err error) {
 	if rs.done {
 		return io.EOF
@@ -1442,9 +1581,25 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 		return driver.ErrBadConn
 	}
 	defer conn.errRecover(&err)
+	if rs.canMulRow &&  !rs.trunk.Eof() {
+		if rs.trunk.CompressionType == 2 {
+			//parse row
+			rs.trunk.Next(&conn.parameterStatus, &rs.rowsHeader, dest)
+			return
+		} else if rs.trunk.CompressionType == 4 {
+			// get one row from bufffer
+			for i := range dest {
+				dest[i] = rs.trunk.ResultRows[i][0]
+				rs.trunk.ResultRows[i] = rs.trunk.ResultRows[i][1:]
+			}
+			rs.trunk.currentLine++
+			return
+		}
+	}
 
 	for {
 		t := conn.recv1Buf(&rs.rb)
+		rs.canMulRow = false
 		switch t {
 		case 'E':
 			err = parseError(&rs.rb)
@@ -1478,6 +1633,70 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 				dest[i] = decode(&conn.parameterStatus, rs.rb.next(l), rs.colTyps[i].OID, rs.colFmts[i])
 			}
 			return
+		case 'K':
+			rs.canMulRow = true
+			rs.trunk.Reset()
+			rs.trunk.rowNum = rs.rb.int32()
+			rs.trunk.colNum = rs.rb.int16()
+			rs.trunk.rowSize = rs.rb.int32()
+			rs.trunk.ResultRows = make([][]driver.Value, rs.trunk.colNum)
+			for i := range rs.trunk.ResultRows {
+				rs.trunk.ResultRows[i] = make([]driver.Value, rs.trunk.rowNum)
+			}
+
+			for i := 0; i < int(rs.trunk.colNum); i++ {
+				rs.trunk.storageLen = append(rs.trunk.storageLen, uint32(rs.rb.int32()))
+				rs.trunk.colBlockOffset = append(rs.trunk.colBlockOffset, uint32(rs.rb.int32()))
+			}
+			capatity := rs.rb.int32()
+			// size := rs.rb.int32()
+			//_ = rs.rb.int32()
+			//
+			//hasColInfo := rs.rb.int16()
+			//// var col_info_size int
+			//if hasColInfo == 1 {
+			//	_ = rs.rb.int32()
+			//}
+			CompressionType := rs.rb.int16()
+			rs.trunk.CompressionType = CompressionType
+			rs.trunk.data = &rs.rb
+			if err != nil {
+				conn.bad = true
+				errorf("unexpected KDataRow after error %s", err)
+			}
+			rs.totalRow += rs.trunk.rowNum
+			if CompressionType == 2 {
+				rs.trunk.Next(&conn.parameterStatus, &rs.rowsHeader, dest)
+				return
+			} else if CompressionType == 4 {
+				if rs.trunk.colNum < len(dest) {
+					dest = dest[:rs.trunk.colNum]
+				}
+				offset := 0
+				for col := range dest {
+					uncompressed_size := rs.rb.int32()
+					compressed_size := rs.rb.int32()
+					x := rs.rb[:compressed_size]
+					rs.rb = rs.rb[compressed_size:]
+					chunk, chunkerr := DeserializeChunk(uncompressed_size, compressed_size, rs.trunk.rowNum, capatity, int(rs.trunk.colBlockOffset[col])-offset, x)
+					offset += uncompressed_size
+					if chunkerr != nil {
+						return chunkerr
+					}
+					for row := 0; row < chunk.counter; row++ {
+						newdata := chunk.data[0:rs.trunk.storageLen[col]]
+						chunk.data = chunk.data[rs.trunk.storageLen[col]:]
+						rs.trunk.ResultRows[col][row] = rs.trunk.DepressGetData(&conn.parameterStatus, rs.trunk.currentLine, col, rs.rowsHeader.colTyps[col].OID, rs.rowsHeader.colFmts[col], nil, newdata)
+					}
+				}
+				for i := range dest {
+					dest[i] = rs.trunk.ResultRows[i][0]
+					rs.trunk.ResultRows[i] = rs.trunk.ResultRows[i][1:]
+				}
+				rs.trunk.currentLine++
+			}
+
+			return
 		case 'T':
 			next := parsePortalRowDescribe(&rs.rb)
 			rs.next = &next
@@ -1486,6 +1705,72 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 			errorf("unexpected message after execute: %q", t)
 		}
 	}
+}
+
+type DataChunk struct {
+	// 假设的DataChunk结构
+	data    []byte
+	counter int
+}
+
+type DataChunkPtr *DataChunk
+
+// 核心反序列化函数
+func DeserializeChunk(uncompressedSize int, compressedSize int, numRows int, capacity int, offset int, pchunk []byte) (DataChunkPtr, error) {
+	var chunk DataChunkPtr
+
+	uncompressedBuffer := make([]byte, uncompressedSize)
+	if compressedSize > 0 {
+		err := DecompressBlock(pchunk, uncompressedBuffer)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if chunk == nil {
+		chunk = createDataChunk(capacity, numRows)
+		if chunk == nil {
+			return nil, errors.New("pq: can not create chunks")
+		}
+	}
+	copy(chunk.data, uncompressedBuffer[offset:])
+
+	return chunk, nil
+}
+
+func createDataChunk(capacity, numRows int) DataChunkPtr {
+	chunk := &DataChunk{
+		data:    make([]byte, capacity),
+		counter: numRows,
+	}
+	
+	if chunk.data == nil {
+		return nil
+	}
+
+	return chunk
+}
+
+// KSlice 定义
+type KSlice struct {
+	data []byte
+	size int
+}
+
+func DecompressBlock(input []byte, output []byte) error {
+	if false {
+		_, err := lz4.UncompressBlock(input, output)
+		if err != nil {
+			return err
+		}
+	}
+	if true {
+		_, err := snappy.Decode(output, input)
+		if err != nil {
+			return err
+		}
+	}
+	
+	return nil
 }
 
 func (rs *rows) HasNextResultSet() bool {
