@@ -686,7 +686,7 @@ func (cn *conn) simpleQuery(q string) (res *rows, err error) {
 			// the query didn't fail; kick off to Next
 			cn.saveMessage(t, r)
 			return
-		case 'K':
+		case 'M':
 			if res == nil {
 				cn.bad = true
 				errorf("unexpected DataRow in simple query execution")
@@ -1633,7 +1633,7 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 				dest[i] = decode(&conn.parameterStatus, rs.rb.next(l), rs.colTyps[i].OID, rs.colFmts[i])
 			}
 			return
-		case 'K':
+		case 'M':
 			rs.canMulRow = true
 			rs.trunk.Reset()
 			rs.trunk.rowNum = rs.rb.int32()
@@ -1649,14 +1649,6 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 				rs.trunk.colBlockOffset = append(rs.trunk.colBlockOffset, uint32(rs.rb.int32()))
 			}
 			capatity := rs.rb.int32()
-			// size := rs.rb.int32()
-			//_ = rs.rb.int32()
-			//
-			//hasColInfo := rs.rb.int16()
-			//// var col_info_size int
-			//if hasColInfo == 1 {
-			//	_ = rs.rb.int32()
-			//}
 			CompressionType := rs.rb.int16()
 			rs.trunk.CompressionType = CompressionType
 			rs.trunk.data = &rs.rb
@@ -1668,7 +1660,7 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 			if CompressionType == 2 {
 				rs.trunk.Next(&conn.parameterStatus, &rs.rowsHeader, dest)
 				return
-			} else if CompressionType == 4 {
+			} else {
 				if rs.trunk.colNum < len(dest) {
 					dest = dest[:rs.trunk.colNum]
 				}
@@ -1678,7 +1670,7 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 					compressed_size := rs.rb.int32()
 					x := rs.rb[:compressed_size]
 					rs.rb = rs.rb[compressed_size:]
-					chunk, chunkerr := DeserializeChunk(uncompressed_size, compressed_size, rs.trunk.rowNum, capatity, int(rs.trunk.colBlockOffset[col])-offset, x)
+					chunk, chunkerr := DeserializeChunk(uncompressed_size, compressed_size, rs.trunk.rowNum, capatity, int(rs.trunk.colBlockOffset[col])-offset, x, CompressionType)
 					offset += uncompressed_size
 					if chunkerr != nil {
 						return chunkerr
@@ -1716,12 +1708,12 @@ type DataChunk struct {
 type DataChunkPtr *DataChunk
 
 // 核心反序列化函数
-func DeserializeChunk(uncompressedSize int, compressedSize int, numRows int, capacity int, offset int, pchunk []byte) (DataChunkPtr, error) {
+func DeserializeChunk(uncompressedSize int, compressedSize int, numRows int, capacity int, offset int, pchunk []byte, CompressionType int) (DataChunkPtr, error) {
 	var chunk DataChunkPtr
 
 	uncompressedBuffer := make([]byte, uncompressedSize)
 	if compressedSize > 0 {
-		err := DecompressBlock(pchunk, uncompressedBuffer)
+		err := DecompressBlock(pchunk, uncompressedBuffer, CompressionType)
 		if err != nil {
 			return nil, err
 		}
@@ -1756,14 +1748,13 @@ type KSlice struct {
 	size int
 }
 
-func DecompressBlock(input []byte, output []byte) error {
-	if false {
+func DecompressBlock(input []byte, output []byte, CompressionType int) error {
+	if CompressionType == 4 {
 		_, err := lz4.UncompressBlock(input, output)
 		if err != nil {
 			return err
 		}
-	}
-	if true {
+	} else if CompressionType == 3 {
 		_, err := snappy.Decode(output, input)
 		if err != nil {
 			return err
