@@ -1586,7 +1586,7 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 			//parse row
 			rs.trunk.Next(&conn.parameterStatus, &rs.rowsHeader, dest)
 			return
-		} else if rs.trunk.CompressionType == 4 {
+		} else if rs.trunk.CompressionType == 4 || rs.trunk.CompressionType == 3 {
 			// get one row from bufffer
 			for i := range dest {
 				dest[i] = rs.trunk.ResultRows[i][0]
