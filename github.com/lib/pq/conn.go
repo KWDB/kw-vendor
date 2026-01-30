@@ -1719,7 +1719,7 @@ func DeserializeChunk(uncompressedSize int, compressedSize int, numRows int, cap
 		}
 	}
 	if chunk == nil {
-		chunk = createDataChunk(capacity, numRows)
+		chunk = createDataChunk(uncompressedSize, numRows)
 		if chunk == nil {
 			return nil, errors.New("pq: can not create chunks")
 		}
