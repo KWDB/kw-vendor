@@ -1654,63 +1654,60 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 			CompressionType := rs.rb.int16()
 			rs.trunk.CompressionType = CompressionType
 			varLen := rs.rb.int32()
-			compressedVarLen := rs.rb.int32()
-			varString := rs.rb[0:compressedVarLen]
-			rs.rb = (rs.rb)[compressedVarLen:]
-			varChunk, varChunkerr := DeserializeChunk(varLen, compressedVarLen, rs.trunk.rowNum, capatity, 0, varString, CompressionType)
-			if varChunkerr != nil {
-				return varChunkerr
+			var newVarString []byte
+			if varLen != 0 {
+				compressedVarLen := rs.rb.int32()
+				varString := rs.rb[0:compressedVarLen]
+				rs.rb = (rs.rb)[compressedVarLen:]
+				varChunk, varChunkerr := DeserializeChunk(varLen, compressedVarLen, rs.trunk.rowNum, capatity, 0, varString, CompressionType)
+				if varChunkerr != nil {
+					return varChunkerr
+				}
+				newVarString = varChunk.data
 			}
-			newVarString := varChunk.data
-			fmt.Println(newVarString)
 			rs.trunk.data = &rs.rb
 			if err != nil {
 				conn.bad = true
 				errorf("unexpected KDataRow after error %s", err)
 			}
 			rs.totalRow += rs.trunk.rowNum
-			if CompressionType == 2 {
-				rs.trunk.Next(&conn.parameterStatus, &rs.rowsHeader, dest)
-				return
-			} else {
-				if rs.trunk.colNum < len(dest) {
-					dest = dest[:rs.trunk.colNum]
-				}
-				offset := 0
-				for col := range dest {
-					uncompressed_size := rs.rb.int32()
-					compressed_size := rs.rb.int32()
-					x := rs.rb[:compressed_size]
-					rs.rb = rs.rb[compressed_size:]
-					chunk, chunkerr := DeserializeChunk(uncompressed_size, compressed_size, rs.trunk.rowNum, capatity, int(rs.trunk.colBlockOffset[col])-offset, x, CompressionType)
-					offset += uncompressed_size
-					if chunkerr != nil {
-						return chunkerr
-					}
-					if rs.trunk.ifVar[col] == 1 {
-						for row := 0; row < chunk.counter; row++ {
-							newdata := chunk.data[0:rs.trunk.storageLen[col]]
-							chunk.data = chunk.data[rs.trunk.storageLen[col]:]
-							varloc := int64(int32(binary.LittleEndian.Uint32(newdata)))
-							varlenString := newVarString[varloc : varloc+2]
-							varloclen := int64(int16(binary.LittleEndian.Uint16(varlenString)))
-							result := trimCString(string(newVarString[varloc+2 : varloc+2+varloclen]))
-							rs.trunk.ResultRows[col][row] = result
-						}
-					} else {
-						for row := 0; row < chunk.counter; row++ {
-							newdata := chunk.data[0:rs.trunk.storageLen[col]]
-							chunk.data = chunk.data[rs.trunk.storageLen[col]:]
-							rs.trunk.ResultRows[col][row] = rs.trunk.DepressGetData(&conn.parameterStatus, rs.trunk.currentLine, col, rs.rowsHeader.colTyps[col].OID, rs.rowsHeader.colFmts[col], nil, newdata)
-						}
-					}
-				}
-				for i := range dest {
-					dest[i] = rs.trunk.ResultRows[i][0]
-					rs.trunk.ResultRows[i] = rs.trunk.ResultRows[i][1:]
-				}
-				rs.trunk.currentLine++
+			if rs.trunk.colNum < len(dest) {
+				dest = dest[:rs.trunk.colNum]
 			}
+			offset := 0
+			for col := range dest {
+				uncompressed_size := rs.rb.int32()
+				compressed_size := rs.rb.int32()
+				x := rs.rb[:compressed_size]
+				rs.rb = rs.rb[compressed_size:]
+				chunk, chunkerr := DeserializeChunk(uncompressed_size, compressed_size, rs.trunk.rowNum, capatity, int(rs.trunk.colBlockOffset[col])-offset, x, CompressionType)
+				offset += uncompressed_size
+				if chunkerr != nil {
+					return chunkerr
+				}
+				if rs.trunk.ifVar[col] == 1 {
+					for row := 0; row < chunk.counter; row++ {
+						newdata := chunk.data[0:rs.trunk.storageLen[col]]
+						chunk.data = chunk.data[rs.trunk.storageLen[col]:]
+						varloc := int64(int32(binary.LittleEndian.Uint32(newdata)))
+						varlenString := newVarString[varloc : varloc+2]
+						varloclen := int64(int16(binary.LittleEndian.Uint16(varlenString)))
+						result := trimCString(string(newVarString[varloc+2 : varloc+2+varloclen]))
+						rs.trunk.ResultRows[col][row] = result
+					}
+				} else {
+					for row := 0; row < chunk.counter; row++ {
+						newdata := chunk.data[0:rs.trunk.storageLen[col]]
+						chunk.data = chunk.data[rs.trunk.storageLen[col]:]
+						rs.trunk.ResultRows[col][row] = rs.trunk.DepressGetData(&conn.parameterStatus, rs.trunk.currentLine, col, rs.rowsHeader.colTyps[col].OID, rs.rowsHeader.colFmts[col], nil, newdata)
+					}
+				}
+			}
+			for i := range dest {
+				dest[i] = rs.trunk.ResultRows[i][0]
+				rs.trunk.ResultRows[i] = rs.trunk.ResultRows[i][1:]
+			}
+			rs.trunk.currentLine++
 
 			return
 		case 'T':
