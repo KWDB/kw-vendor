@@ -22,10 +22,10 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/golang/snappy"
 	"github.com/lib/pq/oid"
 	"github.com/lib/pq/scram"
 	"github.com/pierrec/lz4"
-	"github.com/golang/snappy"
 )
 
 // Common error types
@@ -1448,16 +1448,17 @@ func (rs *rows) Tag() string {
 }
 
 type KwDataChunk struct {
-	data           *readBuf
-	rowNum         int
-	colNum         int
-	rowSize        int
-	storageLen     []uint32
-	colBlockOffset []uint32
-	len            int
-	currentLine    uint32
+	data            *readBuf
+	rowNum          int
+	colNum          int
+	rowSize         int
+	storageLen      []uint32
+	colBlockOffset  []uint32
+	ifVar           []uint32
+	len             int
+	currentLine     uint32
 	CompressionType int
-	ResultRows  [][]driver.Value
+	ResultRows      [][]driver.Value
 }
 
 func trimCString(s string) string {
@@ -1542,7 +1543,7 @@ func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, row uin
 
 		duration := time.Duration(micros) * time.Microsecond
 		return fmt.Sprintf("%d months %d days %s", months, days, duration)
-		
+
 	default:
 		return decode(parameterStatus, s, typ, formatBinary)
 	}
@@ -1581,7 +1582,7 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 		return driver.ErrBadConn
 	}
 	defer conn.errRecover(&err)
-	if rs.canMulRow &&  !rs.trunk.Eof() {
+	if rs.canMulRow && !rs.trunk.Eof() {
 		if rs.trunk.CompressionType == 2 {
 			//parse row
 			rs.trunk.Next(&conn.parameterStatus, &rs.rowsHeader, dest)
@@ -1636,6 +1637,9 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 		case 'M':
 			rs.canMulRow = true
 			rs.trunk.Reset()
+			varlen := rs.rb.int32()
+			varString := rs.rb[0:varlen]
+			rs.rb = (rs.rb)[varlen:]
 			rs.trunk.rowNum = rs.rb.int32()
 			rs.trunk.colNum = rs.rb.int16()
 			rs.trunk.rowSize = rs.rb.int32()
@@ -1647,6 +1651,7 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 			for i := 0; i < int(rs.trunk.colNum); i++ {
 				rs.trunk.storageLen = append(rs.trunk.storageLen, uint32(rs.rb.int32()))
 				rs.trunk.colBlockOffset = append(rs.trunk.colBlockOffset, uint32(rs.rb.int32()))
+				rs.trunk.ifVar = append(rs.trunk.ifVar, uint32(rs.rb.int32()))
 			}
 			capatity := rs.rb.int32()
 			CompressionType := rs.rb.int16()
@@ -1675,10 +1680,22 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 					if chunkerr != nil {
 						return chunkerr
 					}
-					for row := 0; row < chunk.counter; row++ {
-						newdata := chunk.data[0:rs.trunk.storageLen[col]]
-						chunk.data = chunk.data[rs.trunk.storageLen[col]:]
-						rs.trunk.ResultRows[col][row] = rs.trunk.DepressGetData(&conn.parameterStatus, rs.trunk.currentLine, col, rs.rowsHeader.colTyps[col].OID, rs.rowsHeader.colFmts[col], nil, newdata)
+					if rs.trunk.ifVar[col] == 1 {
+						for row := 0; row < chunk.counter; row++ {
+							newdata := chunk.data[0:rs.trunk.storageLen[col]]
+							chunk.data = chunk.data[rs.trunk.storageLen[col]:]
+							varloc := int64(int32(binary.LittleEndian.Uint32(newdata)))
+							varlenString := varString[varloc : varloc+2]
+							varloclen := int64(int16(binary.LittleEndian.Uint16(varlenString)))
+							result := trimCString(string(varString[varloc+2 : varloc+2+varloclen]))
+							rs.trunk.ResultRows[col][row] = result
+						}
+					} else {
+						for row := 0; row < chunk.counter; row++ {
+							newdata := chunk.data[0:rs.trunk.storageLen[col]]
+							chunk.data = chunk.data[rs.trunk.storageLen[col]:]
+							rs.trunk.ResultRows[col][row] = rs.trunk.DepressGetData(&conn.parameterStatus, rs.trunk.currentLine, col, rs.rowsHeader.colTyps[col].OID, rs.rowsHeader.colFmts[col], nil, newdata)
+						}
 					}
 				}
 				for i := range dest {
@@ -1734,7 +1751,7 @@ func createDataChunk(capacity, numRows int) DataChunkPtr {
 		data:    make([]byte, capacity),
 		counter: numRows,
 	}
-	
+
 	if chunk.data == nil {
 		return nil
 	}
@@ -1760,7 +1777,7 @@ func DecompressBlock(input []byte, output []byte, CompressionType int) error {
 			return err
 		}
 	}
-	
+
 	return nil
 }
 
