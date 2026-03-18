@@ -1637,9 +1637,6 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 		case 'M':
 			rs.canMulRow = true
 			rs.trunk.Reset()
-			varlen := rs.rb.int32()
-			varString := rs.rb[0:varlen]
-			rs.rb = (rs.rb)[varlen:]
 			rs.trunk.rowNum = rs.rb.int32()
 			rs.trunk.colNum = rs.rb.int16()
 			rs.trunk.rowSize = rs.rb.int32()
@@ -1656,6 +1653,16 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 			capatity := rs.rb.int32()
 			CompressionType := rs.rb.int16()
 			rs.trunk.CompressionType = CompressionType
+			varLen := rs.rb.int32()
+			compressedVarLen := rs.rb.int32()
+			varString := rs.rb[0:compressedVarLen]
+			rs.rb = (rs.rb)[compressedVarLen:]
+			varChunk, varChunkerr := DeserializeChunk(varLen, compressedVarLen, rs.trunk.rowNum, capatity, 0, varString, CompressionType)
+			if varChunkerr != nil {
+				return varChunkerr
+			}
+			newVarString := varChunk.data
+			fmt.Println(newVarString)
 			rs.trunk.data = &rs.rb
 			if err != nil {
 				conn.bad = true
@@ -1685,9 +1692,9 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 							newdata := chunk.data[0:rs.trunk.storageLen[col]]
 							chunk.data = chunk.data[rs.trunk.storageLen[col]:]
 							varloc := int64(int32(binary.LittleEndian.Uint32(newdata)))
-							varlenString := varString[varloc : varloc+2]
+							varlenString := newVarString[varloc : varloc+2]
 							varloclen := int64(int16(binary.LittleEndian.Uint16(varlenString)))
-							result := trimCString(string(varString[varloc+2 : varloc+2+varloclen]))
+							result := trimCString(string(newVarString[varloc+2 : varloc+2+varloclen]))
 							rs.trunk.ResultRows[col][row] = result
 						}
 					} else {
