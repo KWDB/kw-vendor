@@ -60,15 +60,23 @@ func newNode(arena *Arena, height uint32) (nd *node, err error) {
 
 	// Compute the amount of the tower that will never be used, since the height
 	// is less than maxHeight.
-	unusedSize := (maxHeight - int(height)) * linksSize
+	// unusedSize := (maxHeight - int(height)) * linksSize
+	// douzt: the old code might be wrong, we ran into a situation with size = 24, height =1
+	// arena.n =130947, arena.buf.cap = 131072,  offSet returned is 130944, which means it can NOT
+	// hold a new node struct in the current arena.buf, which causes cordump or panic with checkptr=1
 
-	nodeOffset, err := arena.Alloc(uint32(MaxNodeSize-unusedSize), Align8)
+	unusedSize := cap(arena.buf) - int(arena.Size())
+	if unusedSize < MaxNodeSize {
+		return nil, ErrArenaFull
+	}
+
+	nodeOffset, err := arena.Alloc(uint32(MaxNodeSize), Align8)
 	if err != nil {
-		return
+		return nil, ErrArenaFull
 	}
 
 	nd = (*node)(arena.GetPointer(nodeOffset))
-	return
+	return nd, nil
 }
 
 func (n *node) getKey(arena *Arena) []byte {
