@@ -65,8 +65,8 @@ func newNode(arena *Arena, height uint32) (nd *node, err error) {
 	// arena.n =130947, arena.buf.cap = 131072,  offSet returned is 130944, which means it can NOT
 	// hold a new node struct in the current arena.buf, which causes cordump or panic with checkptr=1
 
-	unusedSize := cap(arena.buf) - int(arena.Size())
-	if unusedSize < MaxNodeSize {
+	// use the delta of buffer leftover and a.n as unused size
+	if cap(arena.buf)-int(arena.Size()) < MaxNodeSize {
 		return nil, ErrArenaFull
 	}
 
