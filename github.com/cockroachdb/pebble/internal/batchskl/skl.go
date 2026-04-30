@@ -260,8 +260,9 @@ func (s *Skiplist) newNode(height,
 		panic("height cannot be less than one or greater than the max height")
 	}
 
-	unusedSize := (maxHeight - int(height)) * linksSize
-	nodeOffset := s.alloc(uint32(maxNodeSize - unusedSize))
+	// douzt: the old code looks wired, we go straight and ask for the size of new node
+	// unusedSize := (maxHeight - int(height)) * linksSize
+	nodeOffset := s.alloc(uint32(maxNodeSize))
 	nd := s.node(nodeOffset)
 
 	nd.offset = offset
