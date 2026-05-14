@@ -1481,7 +1481,7 @@ func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, row uint32, co
 		return FormatTimestamp(t)
 	case oid.T_time, oid.T_timetz:
 		micros := int64(binary.LittleEndian.Uint64(s))
-		return time.Unix(0, micros*1000).UTC() // 纳秒精度
+		return time.Unix(0, micros*1000).UTC() // nanosecond precision
 	case oid.T_bool:
 		return s[0] == 1
 	case oid.T_float4:
@@ -1498,7 +1498,7 @@ func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, row uint32, co
 	case oid.T_int8:
 		return int64(binary.LittleEndian.Uint64(s))
 	case oid.T_interval:
-		// 结构: [time:8][days:4][months:4]
+		// Layout: [time:8][days:4][months:4]
 		micros := int64(binary.LittleEndian.Uint64(s[0:8]))
 		days := int32(binary.LittleEndian.Uint32(s[8:12]))
 		months := int32(binary.LittleEndian.Uint32(s[12:16]))
@@ -1519,7 +1519,7 @@ func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, row uin
 		return FormatTimestamp(t)
 	case oid.T_time, oid.T_timetz:
 		micros := int64(binary.LittleEndian.Uint64(s))
-		return time.Unix(0, micros*1000).UTC() // 纳秒精度
+		return time.Unix(0, micros*1000).UTC() // nanosecond precision
 	case oid.T_bool:
 		return s[0] == 1
 	case oid.T_float4:
@@ -1536,17 +1536,29 @@ func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, row uin
 	case oid.T_int8:
 		return int64(binary.LittleEndian.Uint64(s))
 	case oid.T_interval:
-		// 结构: [time:8][days:4][months:4]
+		// Layout: [time:8][days:4][months:4]
 		micros := int64(binary.LittleEndian.Uint64(s[0:8]))
 		days := int32(binary.LittleEndian.Uint32(s[8:12]))
 		months := int32(binary.LittleEndian.Uint32(s[12:16]))
 
 		duration := time.Duration(micros) * time.Microsecond
 		return fmt.Sprintf("%d months %d days %s", months, days, duration)
+	case oid.T_numeric:
+		if s[0] == 0 {
+			return int64(binary.LittleEndian.Uint64(s[1:]))
+		}
+		return math.Float64frombits(binary.LittleEndian.Uint64(s[1:]))
 
 	default:
 		return decode(parameterStatus, s, typ, formatBinary)
 	}
+}
+
+func compressedDecodeOID(resultOID oid.Oid, rawLen uint32) oid.Oid {
+	if resultOID == oid.T_numeric && rawLen == 8 {
+		return oid.T_float8
+	}
+	return resultOID
 }
 
 func (kdc *KwDataChunk) Next(parameterStatus *parameterStatus, head *rowsHeader, dest []driver.Value) (err error) {
@@ -1685,10 +1697,14 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 				if chunkerr != nil {
 					return chunkerr
 				}
+				storageLen := rs.trunk.storageLen[col]
+				resultOID := rs.rowsHeader.colTyps[col].OID
+				formatCode := rs.rowsHeader.colFmts[col]
+				decodeOID := compressedDecodeOID(resultOID, storageLen)
 				if rs.trunk.ifVar[col] == 1 {
 					for row := 0; row < chunk.counter; row++ {
-						newdata := chunk.data[0:rs.trunk.storageLen[col]]
-						chunk.data = chunk.data[rs.trunk.storageLen[col]:]
+						newdata := chunk.data[0:storageLen]
+						chunk.data = chunk.data[storageLen:]
 						varloc := int64(int32(binary.LittleEndian.Uint32(newdata)))
 						varlenString := newVarString[varloc : varloc+2]
 						varloclen := int64(int16(binary.LittleEndian.Uint16(varlenString)))
@@ -1697,9 +1713,12 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 					}
 				} else {
 					for row := 0; row < chunk.counter; row++ {
-						newdata := chunk.data[0:rs.trunk.storageLen[col]]
-						chunk.data = chunk.data[rs.trunk.storageLen[col]:]
-						rs.trunk.ResultRows[col][row] = rs.trunk.DepressGetData(&conn.parameterStatus, rs.trunk.currentLine, col, rs.rowsHeader.colTyps[col].OID, rs.rowsHeader.colFmts[col], nil, newdata)
+						newdata := chunk.data[0:storageLen]
+						chunk.data = chunk.data[storageLen:]
+						rs.trunk.ResultRows[col][row] = rs.trunk.DepressGetData(
+							&conn.parameterStatus, rs.trunk.currentLine, col, decodeOID,
+							formatCode, nil, newdata,
+						)
 					}
 				}
 			}
@@ -1721,14 +1740,13 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 }
 
 type DataChunk struct {
-	// 假设的DataChunk结构
 	data    []byte
 	counter int
 }
 
 type DataChunkPtr *DataChunk
 
-// 核心反序列化函数
+// DeserializeChunk is the core deserialization function.
 func DeserializeChunk(uncompressedSize int, compressedSize int, numRows int, capacity int, offset int, pchunk []byte, CompressionType int) (DataChunkPtr, error) {
 	var chunk DataChunkPtr
 
@@ -1763,7 +1781,7 @@ func createDataChunk(capacity, numRows int) DataChunkPtr {
 	return chunk
 }
 
-// KSlice 定义
+// KSlice is a byte slice with a size.
 type KSlice struct {
 	data []byte
 	size int
