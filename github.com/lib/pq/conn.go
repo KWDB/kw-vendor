@@ -1526,6 +1526,31 @@ func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, row uin
 		return math.Float32frombits(binary.LittleEndian.Uint32(s))
 	case oid.T_float8:
 		return math.Float64frombits(binary.LittleEndian.Uint64(s))
+	case oid.T_numeric:
+		// Compressed TS results can expose NUMERIC values using TS internal
+		// layouts instead of PostgreSQL's NUMERIC binary format.
+		//
+		// Supported layouts:
+		// - 9 bytes: [isDouble:1][payload:8], where payload is either int64 or
+		//   float64 in little-endian form.
+		// - 8 bytes: raw float64 in little-endian form (used by some AVG paths).
+		//
+		// Convert both layouts into the textual representation that lib/pq
+		// normally returns for NUMERIC.
+		if len(s) == 9 {
+			if s[0] == 0 {
+				return strconv.FormatInt(int64(binary.LittleEndian.Uint64(s[1:])), 10)
+			}
+			return strconv.FormatFloat(
+				math.Float64frombits(binary.LittleEndian.Uint64(s[1:])), 'g', -1, 64,
+			)
+		}
+		if len(s) == 8 {
+			return strconv.FormatFloat(
+				math.Float64frombits(binary.LittleEndian.Uint64(s)), 'g', -1, 64,
+			)
+		}
+		return string(s)
 	case oid.T_varchar, oid.T_text, oid.T_bpchar:
 		result := trimCString(string(s[2:]))
 		return result
