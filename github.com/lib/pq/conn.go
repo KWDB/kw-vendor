@@ -1545,11 +1545,9 @@ func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, row uin
 		return fmt.Sprintf("%d months %d days %s", months, days, duration)
 	case oid.T_numeric:
 		if s[0] == 0 {
-			return strconv.FormatInt(int64(binary.LittleEndian.Uint64(s[1:])), 10)
+			return int64(binary.LittleEndian.Uint64(s[1:]))
 		}
-		return strconv.FormatFloat(
-			math.Float64frombits(binary.LittleEndian.Uint64(s[1:])), 'g', -1, 64,
-		)
+		return math.Float64frombits(binary.LittleEndian.Uint64(s[1:]))
 
 	default:
 		return decode(parameterStatus, s, typ, formatBinary)
