@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 package disk
@@ -5,6 +6,8 @@ package disk
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"syscall"
 	"unsafe"
 
 	"github.com/shirou/gopsutil/internal/common"
@@ -19,29 +22,29 @@ var (
 )
 
 var (
-	FileFileCompression = int64(16)     // 0x00000010
-	FileReadOnlyVolume  = int64(524288) // 0x00080000
+	fileFileCompression = int64(16)     // 0x00000010
+	fileReadOnlyVolume  = int64(524288) // 0x00080000
 )
 
-type Win32_PerfFormattedData struct {
-	Name                    string
-	AvgDiskBytesPerRead     uint64
-	AvgDiskBytesPerWrite    uint64
-	AvgDiskReadQueueLength  uint64
-	AvgDiskWriteQueueLength uint64
-	AvgDisksecPerRead       uint64
-	AvgDisksecPerWrite      uint64
-}
-
-const WaitMSec = 500
-
-func Usage(path string) (*UsageStat, error) {
-	return UsageWithContext(context.Background(), path)
+// diskPerformance is an equivalent representation of DISK_PERFORMANCE in the Windows API.
+// https://docs.microsoft.com/fr-fr/windows/win32/api/winioctl/ns-winioctl-disk_performance
+type diskPerformance struct {
+	BytesRead           int64
+	BytesWritten        int64
+	ReadTime            int64
+	WriteTime           int64
+	IdleTime            int64
+	ReadCount           uint32
+	WriteCount          uint32
+	QueueDepth          uint32
+	SplitCount          uint32
+	QueryTime           int64
+	StorageDeviceNumber uint32
+	StorageManagerName  [8]uint16
+	alignmentPadding    uint32 // necessary for 32bit support, see https://github.com/elastic/beats/pull/16553
 }
 
 func UsageWithContext(ctx context.Context, path string) (*UsageStat, error) {
-	ret := &UsageStat{}
-
 	lpFreeBytesAvailable := int64(0)
 	lpTotalNumberOfBytes := int64(0)
 	lpTotalNumberOfFreeBytes := int64(0)
@@ -53,7 +56,7 @@ func UsageWithContext(ctx context.Context, path string) (*UsageStat, error) {
 	if diskret == 0 {
 		return nil, err
 	}
-	ret = &UsageStat{
+	ret := &UsageStat{
 		Path:        path,
 		Total:       uint64(lpTotalNumberOfBytes),
 		Free:        uint64(lpTotalNumberOfFreeBytes),
@@ -65,10 +68,6 @@ func UsageWithContext(ctx context.Context, path string) (*UsageStat, error) {
 		// InodesUsedPercent: 0,
 	}
 	return ret, nil
-}
-
-func Partitions(all bool) ([]PartitionStat, error) {
-	return PartitionsWithContext(context.Background(), all)
 }
 
 func PartitionsWithContext(ctx context.Context, all bool) ([]PartitionStat, error) {
@@ -108,16 +107,16 @@ func PartitionsWithContext(ctx context.Context, all bool) ([]PartitionStat, erro
 					uintptr(len(lpFileSystemNameBuffer)))
 				if driveret == 0 {
 					if typeret == 5 || typeret == 2 {
-						continue //device is not ready will happen if there is no disk in the drive
+						continue // device is not ready will happen if there is no disk in the drive
 					}
 					return ret, err
 				}
-				opts := "rw"
-				if lpFileSystemFlags&FileReadOnlyVolume != 0 {
-					opts = "ro"
+				opts := []string{"rw"}
+				if lpFileSystemFlags&fileReadOnlyVolume != 0 {
+					opts = []string{"ro"}
 				}
-				if lpFileSystemFlags&FileFileCompression != 0 {
-					opts += ".compress"
+				if lpFileSystemFlags&fileFileCompression != 0 {
+					opts = append(opts, "compress")
 				}
 
 				d := PartitionStat{
@@ -133,36 +132,61 @@ func PartitionsWithContext(ctx context.Context, all bool) ([]PartitionStat, erro
 	return ret, nil
 }
 
-func IOCounters(names ...string) (map[string]IOCountersStat, error) {
-	return IOCountersWithContext(context.Background(), names...)
+func IOCountersWithContext(ctx context.Context, names ...string) (map[string]IOCountersStat, error) {
+	// https://github.com/giampaolo/psutil/blob/544e9daa4f66a9f80d7bf6c7886d693ee42f0a13/psutil/arch/windows/disk.c#L83
+	drivemap := make(map[string]IOCountersStat, 0)
+	var diskPerformance diskPerformance
+
+	lpBuffer := make([]uint16, 254)
+	lpBufferLen, err := windows.GetLogicalDriveStrings(uint32(len(lpBuffer)), &lpBuffer[0])
+	if err != nil {
+		return drivemap, err
+	}
+	for _, v := range lpBuffer[:lpBufferLen] {
+		if 'A' <= v && v <= 'Z' {
+			path := string(rune(v)) + ":"
+			typepath, _ := windows.UTF16PtrFromString(path)
+			typeret := windows.GetDriveType(typepath)
+			if typeret == 0 {
+				return drivemap, windows.GetLastError()
+			}
+			if typeret != windows.DRIVE_FIXED {
+				continue
+			}
+			szDevice := fmt.Sprintf(`\\.\%s`, path)
+			const IOCTL_DISK_PERFORMANCE = 0x70020
+			h, err := windows.CreateFile(syscall.StringToUTF16Ptr(szDevice), 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, 0, 0)
+			if err != nil {
+				if err == windows.ERROR_FILE_NOT_FOUND {
+					continue
+				}
+				return drivemap, err
+			}
+			defer windows.CloseHandle(h)
+
+			var diskPerformanceSize uint32
+			err = windows.DeviceIoControl(h, IOCTL_DISK_PERFORMANCE, nil, 0, (*byte)(unsafe.Pointer(&diskPerformance)), uint32(unsafe.Sizeof(diskPerformance)), &diskPerformanceSize, nil)
+			if err != nil {
+				return drivemap, err
+			}
+			drivemap[path] = IOCountersStat{
+				ReadBytes:  uint64(diskPerformance.BytesRead),
+				WriteBytes: uint64(diskPerformance.BytesWritten),
+				ReadCount:  uint64(diskPerformance.ReadCount),
+				WriteCount: uint64(diskPerformance.WriteCount),
+				ReadTime:   uint64(diskPerformance.ReadTime / 10000 / 1000), // convert to ms: https://github.com/giampaolo/psutil/issues/1012
+				WriteTime:  uint64(diskPerformance.WriteTime / 10000 / 1000),
+				Name:       path,
+			}
+		}
+	}
+	return drivemap, nil
 }
 
-func IOCountersWithContext(ctx context.Context, names ...string) (map[string]IOCountersStat, error) {
-	ret := make(map[string]IOCountersStat, 0)
-	var dst []Win32_PerfFormattedData
+func SerialNumberWithContext(ctx context.Context, name string) (string, error) {
+	return "", common.ErrNotImplementedError
+}
 
-	err := common.WMIQueryWithContext(ctx, "SELECT * FROM Win32_PerfFormattedData_PerfDisk_LogicalDisk", &dst)
-	if err != nil {
-		return ret, err
-	}
-	for _, d := range dst {
-		if len(d.Name) > 3 { // not get _Total or Harddrive
-			continue
-		}
-
-		if len(names) > 0 && !common.StringsHas(names, d.Name) {
-			continue
-		}
-
-		ret[d.Name] = IOCountersStat{
-			Name:       d.Name,
-			ReadCount:  uint64(d.AvgDiskReadQueueLength),
-			WriteCount: d.AvgDiskWriteQueueLength,
-			ReadBytes:  uint64(d.AvgDiskBytesPerRead),
-			WriteBytes: uint64(d.AvgDiskBytesPerWrite),
-			ReadTime:   d.AvgDisksecPerRead,
-			WriteTime:  d.AvgDisksecPerWrite,
-		}
-	}
-	return ret, nil
+func LabelWithContext(ctx context.Context, name string) (string, error) {
+	return "", common.ErrNotImplementedError
 }

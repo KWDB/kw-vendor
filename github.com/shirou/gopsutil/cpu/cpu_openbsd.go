@@ -1,3 +1,4 @@
+//go:build openbsd
 // +build openbsd
 
 package cpu
@@ -7,46 +8,76 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/shirou/gopsutil/internal/common"
+	"github.com/tklauser/go-sysconf"
 	"golang.org/x/sys/unix"
 )
 
 // sys/sched.h
-const (
+var (
 	CPUser    = 0
-	CPNice    = 1
-	CPSys     = 2
-	CPIntr    = 3
-	CPIdle    = 4
-	CPUStates = 5
+	cpNice    = 1
+	cpSys     = 2
+	cpIntr    = 3
+	cpIdle    = 4
+	cpUStates = 5
 )
 
 // sys/sysctl.h
 const (
-	CTLKern     = 1  // "high kernel": proc, limits
-	KernCptime  = 40 // KERN_CPTIME
-	KernCptime2 = 71 // KERN_CPTIME2
+	ctlKern     = 1  // "high kernel": proc, limits
+	ctlHw       = 6  // CTL_HW
+	sMT         = 24 // HW_sMT
+	kernCptime  = 40 // KERN_CPTIME
+	kernCptime2 = 71 // KERN_CPTIME2
 )
 
 var ClocksPerSec = float64(128)
 
 func init() {
-	getconf, err := exec.LookPath("/usr/bin/getconf")
-	if err != nil {
-		return
-	}
-	out, err := invoke.Command(getconf, "CLK_TCK")
+	clkTck, err := sysconf.Sysconf(sysconf.SC_CLK_TCK)
 	// ignore errors
 	if err == nil {
-		i, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
-		if err == nil {
-			ClocksPerSec = float64(i)
-		}
+		ClocksPerSec = float64(clkTck)
 	}
+
+	func() {
+		v, err := unix.Sysctl("kern.osrelease") // can't reuse host.PlatformInformation because of circular import
+		if err != nil {
+			return
+		}
+		v = strings.ToLower(v)
+		version, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return
+		}
+		if version >= 6.4 {
+			cpIntr = 4
+			cpIdle = 5
+			cpUStates = 6
+		}
+	}()
+}
+
+func smt() (bool, error) {
+	mib := []int32{ctlHw, sMT}
+	buf, _, err := common.CallSyscall(mib)
+	if err != nil {
+		return false, err
+	}
+
+	var ret bool
+	br := bytes.NewReader(buf)
+	if err := binary.Read(br, binary.LittleEndian, &ret); err != nil {
+		return false, err
+	}
+
+	return ret, nil
 }
 
 func Times(percpu bool) ([]TimesStat, error) {
@@ -63,13 +94,27 @@ func TimesWithContext(ctx context.Context, percpu bool) ([]TimesStat, error) {
 		ncpu = 1
 	}
 
+	smt, err := smt()
+	if err == syscall.EOPNOTSUPP {
+		// if hw.smt is not applicable for this platform (e.g. i386),
+		// pretend it's enabled
+		smt = true
+	} else if err != nil {
+		return nil, err
+	}
+
 	for i := 0; i < ncpu; i++ {
-		var cpuTimes [CPUStates]int64
+		j := i
+		if !smt {
+			j *= 2
+		}
+
+		cpuTimes := make([]int32, cpUStates)
 		var mib []int32
 		if percpu {
-			mib = []int32{CTLKern, KernCptime}
+			mib = []int32{ctlKern, kernCptime2, int32(j)}
 		} else {
-			mib = []int32{CTLKern, KernCptime2, int32(i)}
+			mib = []int32{ctlKern, kernCptime}
 		}
 		buf, _, err := common.CallSyscall(mib)
 		if err != nil {
@@ -83,15 +128,15 @@ func TimesWithContext(ctx context.Context, percpu bool) ([]TimesStat, error) {
 		}
 		c := TimesStat{
 			User:   float64(cpuTimes[CPUser]) / ClocksPerSec,
-			Nice:   float64(cpuTimes[CPNice]) / ClocksPerSec,
-			System: float64(cpuTimes[CPSys]) / ClocksPerSec,
-			Idle:   float64(cpuTimes[CPIdle]) / ClocksPerSec,
-			Irq:    float64(cpuTimes[CPIntr]) / ClocksPerSec,
+			Nice:   float64(cpuTimes[cpNice]) / ClocksPerSec,
+			System: float64(cpuTimes[cpSys]) / ClocksPerSec,
+			Idle:   float64(cpuTimes[cpIdle]) / ClocksPerSec,
+			Irq:    float64(cpuTimes[cpIntr]) / ClocksPerSec,
 		}
-		if !percpu {
-			c.CPU = "cpu-total"
+		if percpu {
+			c.CPU = fmt.Sprintf("cpu%d", j)
 		} else {
-			c.CPU = fmt.Sprintf("cpu%d", i)
+			c.CPU = "cpu-total"
 		}
 		ret = append(ret, c)
 	}
@@ -106,14 +151,29 @@ func Info() ([]InfoStat, error) {
 
 func InfoWithContext(ctx context.Context) ([]InfoStat, error) {
 	var ret []InfoStat
+	var err error
 
 	c := InfoStat{}
 
-	v, err := unix.Sysctl("hw.model")
+	mhz, err := unix.SysctlUint32("hw.cpuspeed")
 	if err != nil {
 		return nil, err
 	}
-	c.ModelName = v
+	c.Mhz = float64(mhz)
+
+	ncpu, err := unix.SysctlUint32("hw.ncpuonline")
+	if err != nil {
+		return nil, err
+	}
+	c.Cores = int32(ncpu)
+
+	if c.ModelName, err = unix.Sysctl("hw.model"); err != nil {
+		return nil, err
+	}
 
 	return append(ret, c), nil
+}
+
+func CountsWithContext(ctx context.Context, logical bool) (int, error) {
+	return runtime.NumCPU(), nil
 }

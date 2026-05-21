@@ -1,3 +1,4 @@
+//go:build solaris
 // +build solaris
 
 package disk
@@ -23,23 +24,17 @@ const (
 	_MNTTAB = "/etc/mnttab"
 )
 
-var (
-	// A blacklist of read-only virtual filesystems.  Writable filesystems are of
-	// operational concern and must not be included in this list.
-	fsTypeBlacklist = map[string]struct{}{
-		"ctfs":   struct{}{},
-		"dev":    struct{}{},
-		"fd":     struct{}{},
-		"lofs":   struct{}{},
-		"lxproc": struct{}{},
-		"mntfs":  struct{}{},
-		"objfs":  struct{}{},
-		"proc":   struct{}{},
-	}
-)
-
-func Partitions(all bool) ([]PartitionStat, error) {
-	return PartitionsWithContext(context.Background(), all)
+// A blacklist of read-only virtual filesystems.  Writable filesystems are of
+// operational concern and must not be included in this list.
+var fsTypeBlacklist = map[string]struct{}{
+	"ctfs":   {},
+	"dev":    {},
+	"fd":     {},
+	"lofs":   {},
+	"lxproc": {},
+	"mntfs":  {},
+	"objfs":  {},
+	"proc":   {},
 }
 
 func PartitionsWithContext(ctx context.Context, all bool) ([]PartitionStat, error) {
@@ -73,7 +68,7 @@ func PartitionsWithContext(ctx context.Context, all bool) ([]PartitionStat, erro
 			Device:     fields[0],
 			Mountpoint: fields[1],
 			Fstype:     fields[2],
-			Opts:       fields[3],
+			Opts:       strings.Split(fields[3], ","),
 		})
 	}
 	if err := scanner.Err(); err != nil {
@@ -83,16 +78,8 @@ func PartitionsWithContext(ctx context.Context, all bool) ([]PartitionStat, erro
 	return ret, err
 }
 
-func IOCounters(names ...string) (map[string]IOCountersStat, error) {
-	return IOCountersWithContext(context.Background(), names...)
-}
-
 func IOCountersWithContext(ctx context.Context, names ...string) (map[string]IOCountersStat, error) {
 	return nil, common.ErrNotImplementedError
-}
-
-func Usage(path string) (*UsageStat, error) {
-	return UsageWithContext(context.Background(), path)
 }
 
 func UsageWithContext(ctx context.Context, path string) (*UsageStat, error) {
@@ -124,4 +111,12 @@ func UsageWithContext(ctx context.Context, path string) (*UsageStat, error) {
 	usageStat.UsedPercent = (float64(usageStat.Used) / float64(usageStat.Total)) * 100.0
 
 	return usageStat, nil
+}
+
+func SerialNumberWithContext(ctx context.Context, name string) (string, error) {
+	return "", common.ErrNotImplementedError
+}
+
+func LabelWithContext(ctx context.Context, name string) (string, error) {
+	return "", common.ErrNotImplementedError
 }

@@ -1,6 +1,7 @@
 package disk
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/shirou/gopsutil/internal/common"
@@ -22,10 +23,10 @@ type UsageStat struct {
 }
 
 type PartitionStat struct {
-	Device     string `json:"device"`
-	Mountpoint string `json:"mountpoint"`
-	Fstype     string `json:"fstype"`
-	Opts       string `json:"opts"`
+	Device     string   `json:"device"`
+	Mountpoint string   `json:"mountpoint"`
+	Fstype     string   `json:"fstype"`
+	Opts       []string `json:"opts"`
 }
 
 type IOCountersStat struct {
@@ -58,4 +59,38 @@ func (d PartitionStat) String() string {
 func (d IOCountersStat) String() string {
 	s, _ := json.Marshal(d)
 	return string(s)
+}
+
+// Usage returns a file system usage. path is a filesystem path such
+// as "/", not device file path like "/dev/vda1".  If you want to use
+// a return value of disk.Partitions, use "Mountpoint" not "Device".
+func Usage(path string) (*UsageStat, error) {
+	return UsageWithContext(context.Background(), path)
+}
+
+// Partitions returns disk partitions. If all is false, returns
+// physical devices only (e.g. hard disks, cd-rom drives, USB keys)
+// and ignore all others (e.g. memory partitions such as /dev/shm)
+//
+// 'all' argument is ignored for BSD, see: https://github.com/giampaolo/psutil/issues/906
+func Partitions(all bool) ([]PartitionStat, error) {
+	return PartitionsWithContext(context.Background(), all)
+}
+
+func IOCounters(names ...string) (map[string]IOCountersStat, error) {
+	return IOCountersWithContext(context.Background(), names...)
+}
+
+// SerialNumber returns Serial Number of given device or empty string
+// on error. Name of device is expected, eg. /dev/sda
+func SerialNumber(name string) (string, error) {
+	return SerialNumberWithContext(context.Background(), name)
+}
+
+// Label returns label of given device or empty string on error.
+// Name of device is expected, eg. /dev/sda
+// Supports label based on devicemapper name
+// See https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-block-dm
+func Label(name string) (string, error) {
+	return LabelWithContext(context.Background(), name)
 }
