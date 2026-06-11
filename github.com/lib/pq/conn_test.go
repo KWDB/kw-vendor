@@ -15,7 +15,7 @@ func TestDecodeCompressedNumericIntLayout(t *testing.T) {
 
 	kdc := &KwDataChunk{}
 	got := kdc.DepressGetData(nil, 0, 0, oid.T_numeric, formatBinary, nil, payload[:])
-	if got != "11" {
+	if got != int64(11) {
 		t.Fatalf("expected numeric int layout to decode to 11, got %#v", got)
 	}
 }
@@ -27,7 +27,7 @@ func TestDecodeCompressedNumericFloatLayout(t *testing.T) {
 
 	kdc := &KwDataChunk{}
 	got := kdc.DepressGetData(nil, 0, 0, oid.T_numeric, formatBinary, nil, payload[:])
-	if got != "3.5" {
+	if got != float64(3.5) {
 		t.Fatalf("expected numeric float layout to decode to 3.5, got %#v", got)
 	}
 }
