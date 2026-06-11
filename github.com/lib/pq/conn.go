@@ -1728,18 +1728,36 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 				decodeOID := compressedDecodeOID(resultOID, storageLen)
 				if rs.trunk.ifVar[col] == 1 {
 					for row := 0; row < chunk.counter; row++ {
-						newdata := chunk.data[0:storageLen]
+						if uint32(len(chunk.data)) < storageLen {
+							return fmt.Errorf("pq: compressed column %d row %d is shorter than storage length %d", col, row, storageLen)
+						}
+						newdata := chunk.data[:storageLen]
 						chunk.data = chunk.data[storageLen:]
-						varloc := int64(int32(binary.LittleEndian.Uint32(newdata)))
-						varlenString := newVarString[varloc : varloc+2]
-						varloclen := int64(int16(binary.LittleEndian.Uint16(varlenString)))
-						rawValue := newVarString[varloc+2 : varloc+2+varloclen]
+						if chunk.isNull(row) {
+							rs.trunk.ResultRows[col][row] = nil
+							continue
+						}
+						if len(newdata) < 4 {
+							return fmt.Errorf("pq: compressed variable column %d has storage length %d", col, storageLen)
+						}
+						varloc := binary.LittleEndian.Uint32(newdata[:4])
+						rawValue, varErr := compressedVarData(newVarString, varloc)
+						if varErr != nil {
+							return varErr
+						}
 						rs.trunk.ResultRows[col][row] = compressedVarValue(resultOID, rawValue)
 					}
 				} else {
 					for row := 0; row < chunk.counter; row++ {
-						newdata := chunk.data[0:storageLen]
+						if uint32(len(chunk.data)) < storageLen {
+							return fmt.Errorf("pq: compressed column %d row %d is shorter than storage length %d", col, row, storageLen)
+						}
+						newdata := chunk.data[:storageLen]
 						chunk.data = chunk.data[storageLen:]
+						if chunk.isNull(row) {
+							rs.trunk.ResultRows[col][row] = nil
+							continue
+						}
 						rs.trunk.ResultRows[col][row] = rs.trunk.DepressGetData(
 							&conn.parameterStatus, rs.trunk.currentLine, col, decodeOID,
 							formatCode, nil, newdata,
@@ -1765,16 +1783,34 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 }
 
 type DataChunk struct {
-	data    []byte
-	counter int
+	data       []byte
+	nullBitmap []byte
+	counter    int
 }
 
-type DataChunkPtr *DataChunk
+type DataChunkPtr = *DataChunk
+
+func (chunk *DataChunk) isNull(row int) bool {
+	byteIndex := row >> 3
+	return byteIndex < len(chunk.nullBitmap) &&
+		chunk.nullBitmap[byteIndex]&(1<<uint(row&7)) != 0
+}
+
+func compressedVarData(data []byte, offset uint32) ([]byte, error) {
+	start := int(offset)
+	if start < 0 || start > len(data)-2 {
+		return nil, fmt.Errorf("pq: invalid compressed variable offset %d", offset)
+	}
+	length := int(binary.LittleEndian.Uint16(data[start : start+2]))
+	start += 2
+	if length > len(data)-start {
+		return nil, fmt.Errorf("pq: invalid compressed variable length %d", length)
+	}
+	return data[start : start+length], nil
+}
 
 // DeserializeChunk is the core deserialization function.
 func DeserializeChunk(uncompressedSize int, compressedSize int, numRows int, capacity int, offset int, pchunk []byte, CompressionType int) (DataChunkPtr, error) {
-	var chunk DataChunkPtr
-
 	uncompressedBuffer := make([]byte, uncompressedSize)
 	if compressedSize > 0 {
 		err := DecompressBlock(pchunk, uncompressedBuffer, CompressionType)
@@ -1782,12 +1818,14 @@ func DeserializeChunk(uncompressedSize int, compressedSize int, numRows int, cap
 			return nil, err
 		}
 	}
-	if chunk == nil {
-		chunk = createDataChunk(uncompressedSize, numRows)
-		if chunk == nil {
-			return nil, errors.New("pq: can not create chunks")
-		}
+	if offset < 0 || offset > len(uncompressedBuffer) {
+		return nil, fmt.Errorf("pq: invalid compressed column offset %d", offset)
 	}
+	chunk := createDataChunk(uncompressedSize-offset, numRows)
+	if chunk == nil {
+		return nil, errors.New("pq: can not create chunks")
+	}
+	chunk.nullBitmap = append(chunk.nullBitmap, uncompressedBuffer[:offset]...)
 	copy(chunk.data, uncompressedBuffer[offset:])
 
 	return chunk, nil
