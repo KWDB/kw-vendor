@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -1468,6 +1469,26 @@ func trimCString(s string) string {
 	return s
 }
 
+func compressedFixedStringData(s []byte) []byte {
+	if len(s) < 2 {
+		return nil
+	}
+	length := int(binary.LittleEndian.Uint16(s[:2]))
+	if length > len(s)-2 {
+		length = len(s) - 2
+	}
+	return s[2 : 2+length]
+}
+
+func compressedVarValue(typ oid.Oid, s []byte) interface{} {
+	switch typ {
+	case oid.T_bytea, oid.T_varbytea:
+		return `\x` + hex.EncodeToString(s)
+	default:
+		return string(s)
+	}
+}
+
 func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, row uint32, col int, typ oid.Oid, f format, length *int64) interface{} {
 	start := row*kdc.storageLen[col] + kdc.colBlockOffset[col]
 	if int(start) > len(*kdc.data) {
@@ -1488,9 +1509,11 @@ func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, row uint32, co
 		return math.Float32frombits(binary.LittleEndian.Uint32(s))
 	case oid.T_float8:
 		return math.Float64frombits(binary.LittleEndian.Uint64(s))
-	case oid.T_varchar, oid.T_text, oid.T_bpchar:
-		result := trimCString(string(s[2:]))
-		return result
+	// Custom OIDs: 91002=NCHAR, 91004=NVARCHAR, 91008=GEOMETRY.
+	case oid.T_varchar, oid.T_text, oid.T_bpchar, oid.Oid(91002), oid.Oid(91004), oid.Oid(91008):
+		return string(compressedFixedStringData(s))
+	case oid.T_bytea, oid.T_varbytea:
+		return `\x` + hex.EncodeToString(compressedFixedStringData(s))
 	case oid.T_int2: // int16
 		return int64(int16(binary.LittleEndian.Uint16(s)))
 	case oid.T_int4:
@@ -1526,9 +1549,11 @@ func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, row uin
 		return math.Float32frombits(binary.LittleEndian.Uint32(s))
 	case oid.T_float8:
 		return math.Float64frombits(binary.LittleEndian.Uint64(s))
-	case oid.T_varchar, oid.T_text, oid.T_bpchar:
-		result := trimCString(string(s[2:]))
-		return result
+	// Custom OIDs: 91002=NCHAR, 91004=NVARCHAR, 91008=GEOMETRY.
+	case oid.T_varchar, oid.T_text, oid.T_bpchar, oid.Oid(91002), oid.Oid(91004), oid.Oid(91008):
+		return string(compressedFixedStringData(s))
+	case oid.T_bytea, oid.T_varbytea:
+		return `\x` + hex.EncodeToString(compressedFixedStringData(s))
 	case oid.T_int2: // int16
 		return int64(int16(binary.LittleEndian.Uint16(s)))
 	case oid.T_int4:
@@ -1703,18 +1728,36 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 				decodeOID := compressedDecodeOID(resultOID, storageLen)
 				if rs.trunk.ifVar[col] == 1 {
 					for row := 0; row < chunk.counter; row++ {
-						newdata := chunk.data[0:storageLen]
+						if uint32(len(chunk.data)) < storageLen {
+							return fmt.Errorf("pq: compressed column %d row %d is shorter than storage length %d", col, row, storageLen)
+						}
+						newdata := chunk.data[:storageLen]
 						chunk.data = chunk.data[storageLen:]
-						varloc := int64(int32(binary.LittleEndian.Uint32(newdata)))
-						varlenString := newVarString[varloc : varloc+2]
-						varloclen := int64(int16(binary.LittleEndian.Uint16(varlenString)))
-						result := trimCString(string(newVarString[varloc+2 : varloc+2+varloclen]))
-						rs.trunk.ResultRows[col][row] = result
+						if chunk.isNull(row) {
+							rs.trunk.ResultRows[col][row] = nil
+							continue
+						}
+						if len(newdata) < 4 {
+							return fmt.Errorf("pq: compressed variable column %d has storage length %d", col, storageLen)
+						}
+						varloc := binary.LittleEndian.Uint32(newdata[:4])
+						rawValue, varErr := compressedVarData(newVarString, varloc)
+						if varErr != nil {
+							return varErr
+						}
+						rs.trunk.ResultRows[col][row] = compressedVarValue(resultOID, rawValue)
 					}
 				} else {
 					for row := 0; row < chunk.counter; row++ {
-						newdata := chunk.data[0:storageLen]
+						if uint32(len(chunk.data)) < storageLen {
+							return fmt.Errorf("pq: compressed column %d row %d is shorter than storage length %d", col, row, storageLen)
+						}
+						newdata := chunk.data[:storageLen]
 						chunk.data = chunk.data[storageLen:]
+						if chunk.isNull(row) {
+							rs.trunk.ResultRows[col][row] = nil
+							continue
+						}
 						rs.trunk.ResultRows[col][row] = rs.trunk.DepressGetData(
 							&conn.parameterStatus, rs.trunk.currentLine, col, decodeOID,
 							formatCode, nil, newdata,
@@ -1740,16 +1783,34 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 }
 
 type DataChunk struct {
-	data    []byte
-	counter int
+	data       []byte
+	nullBitmap []byte
+	counter    int
 }
 
-type DataChunkPtr *DataChunk
+type DataChunkPtr = *DataChunk
+
+func (chunk *DataChunk) isNull(row int) bool {
+	byteIndex := row >> 3
+	return byteIndex < len(chunk.nullBitmap) &&
+		chunk.nullBitmap[byteIndex]&(1<<uint(row&7)) != 0
+}
+
+func compressedVarData(data []byte, offset uint32) ([]byte, error) {
+	start := int(offset)
+	if start < 0 || start > len(data)-2 {
+		return nil, fmt.Errorf("pq: invalid compressed variable offset %d", offset)
+	}
+	length := int(binary.LittleEndian.Uint16(data[start : start+2]))
+	start += 2
+	if length > len(data)-start {
+		return nil, fmt.Errorf("pq: invalid compressed variable length %d", length)
+	}
+	return data[start : start+length], nil
+}
 
 // DeserializeChunk is the core deserialization function.
 func DeserializeChunk(uncompressedSize int, compressedSize int, numRows int, capacity int, offset int, pchunk []byte, CompressionType int) (DataChunkPtr, error) {
-	var chunk DataChunkPtr
-
 	uncompressedBuffer := make([]byte, uncompressedSize)
 	if compressedSize > 0 {
 		err := DecompressBlock(pchunk, uncompressedBuffer, CompressionType)
@@ -1757,12 +1818,14 @@ func DeserializeChunk(uncompressedSize int, compressedSize int, numRows int, cap
 			return nil, err
 		}
 	}
-	if chunk == nil {
-		chunk = createDataChunk(uncompressedSize, numRows)
-		if chunk == nil {
-			return nil, errors.New("pq: can not create chunks")
-		}
+	if offset < 0 || offset > len(uncompressedBuffer) {
+		return nil, fmt.Errorf("pq: invalid compressed column offset %d", offset)
 	}
+	chunk := createDataChunk(uncompressedSize-offset, numRows)
+	if chunk == nil {
+		return nil, errors.New("pq: can not create chunks")
+	}
+	chunk.nullBitmap = append(chunk.nullBitmap, uncompressedBuffer[:offset]...)
 	copy(chunk.data, uncompressedBuffer[offset:])
 
 	return chunk, nil
