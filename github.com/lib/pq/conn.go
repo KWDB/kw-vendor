@@ -1489,6 +1489,22 @@ func compressedVarValue(typ oid.Oid, s []byte) interface{} {
 	}
 }
 
+func compressedFormatTimestamp(t time.Time) []byte {
+	b := FormatTimestamp(t.UTC())
+	if len(b) > 0 && b[len(b)-1] == 'Z' {
+		b = append(b[:len(b)-1], "+00:00"...)
+	}
+	return b
+}
+
+func compressedFloat4Value(s []byte) interface{} {
+	v := math.Float32frombits(binary.LittleEndian.Uint32(s))
+	if v == float32(math.MaxFloat32) || v == -float32(math.MaxFloat32) {
+		return float64(v)
+	}
+	return v
+}
+
 func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, row uint32, col int, typ oid.Oid, f format, length *int64) interface{} {
 	start := row*kdc.storageLen[col] + kdc.colBlockOffset[col]
 	if int(start) > len(*kdc.data) {
@@ -1498,15 +1514,15 @@ func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, row uint32, co
 	switch typ {
 	case oid.T_timestamptz, oid.T_timestamp, oid.T_date:
 		timestamp := int64(binary.LittleEndian.Uint64(s))
-		t := time.Unix(0, timestamp*int64(time.Millisecond))
-		return FormatTimestamp(t)
+		t := time.Unix(0, timestamp*int64(time.Millisecond)).UTC()
+		return compressedFormatTimestamp(t)
 	case oid.T_time, oid.T_timetz:
 		micros := int64(binary.LittleEndian.Uint64(s))
 		return time.Unix(0, micros*1000).UTC() // nanosecond precision
 	case oid.T_bool:
 		return s[0] == 1
 	case oid.T_float4:
-		return math.Float32frombits(binary.LittleEndian.Uint32(s))
+		return compressedFloat4Value(s)
 	case oid.T_float8:
 		return math.Float64frombits(binary.LittleEndian.Uint64(s))
 	// Custom OIDs: 91002=NCHAR, 91004=NVARCHAR, 91008=GEOMETRY.
@@ -1538,15 +1554,15 @@ func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, row uin
 	switch typ {
 	case oid.T_timestamptz, oid.T_timestamp, oid.T_date:
 		timestamp := int64(binary.LittleEndian.Uint64(s))
-		t := time.Unix(0, timestamp*int64(time.Millisecond))
-		return FormatTimestamp(t)
+		t := time.Unix(0, timestamp*int64(time.Millisecond)).UTC()
+		return compressedFormatTimestamp(t)
 	case oid.T_time, oid.T_timetz:
 		micros := int64(binary.LittleEndian.Uint64(s))
 		return time.Unix(0, micros*1000).UTC() // nanosecond precision
 	case oid.T_bool:
 		return s[0] == 1
 	case oid.T_float4:
-		return math.Float32frombits(binary.LittleEndian.Uint32(s))
+		return compressedFloat4Value(s)
 	case oid.T_float8:
 		return math.Float64frombits(binary.LittleEndian.Uint64(s))
 	// Custom OIDs: 91002=NCHAR, 91004=NVARCHAR, 91008=GEOMETRY.

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/lib/pq/oid"
 )
@@ -61,5 +62,37 @@ func TestCompressedDecodeOIDInt8WithInt4Storage(t *testing.T) {
 	got := kdc.DepressGetData(nil, 0, 0, gotOID, formatBinary, nil, payload[:])
 	if got != int64(10) {
 		t.Fatalf("expected int4 storage to decode to 10, got %#v", got)
+	}
+}
+func TestDecodeCompressedFloat4FormattingValues(t *testing.T) {
+	var payload [4]byte
+	binary.LittleEndian.PutUint32(payload[:], math.Float32bits(float32(1.1)))
+
+	kdc := &KwDataChunk{}
+	got := kdc.DepressGetData(nil, 0, 0, oid.T_float4, formatBinary, nil, payload[:])
+	if _, ok := got.(float32); !ok {
+		t.Fatalf("expected ordinary compressed float4 to decode as float32, got %T", got)
+	}
+
+	binary.LittleEndian.PutUint32(payload[:], math.Float32bits(math.MaxFloat32))
+
+	got = kdc.DepressGetData(nil, 0, 0, oid.T_float4, formatBinary, nil, payload[:])
+	if _, ok := got.(float64); !ok {
+		t.Fatalf("expected max compressed float4 to decode as float64, got %T", got)
+	}
+	if got != float64(float32(math.MaxFloat32)) {
+		t.Fatalf("expected max compressed float4 to decode to %v, got %#v", float64(float32(math.MaxFloat32)), got)
+	}
+}
+
+func TestDecodeCompressedTimestampUsesUTC(t *testing.T) {
+	var payload [8]byte
+	ts := time.Date(2026, 6, 10, 8, 0, 0, 0, time.UTC).UnixMilli()
+	binary.LittleEndian.PutUint64(payload[:], uint64(ts))
+
+	kdc := &KwDataChunk{}
+	got := kdc.DepressGetData(nil, 0, 0, oid.T_timestamptz, formatBinary, nil, payload[:])
+	if string(got.([]byte)) != "2026-06-10 08:00:00+00:00" {
+		t.Fatalf("expected UTC timestamp text, got %#v", got)
 	}
 }
