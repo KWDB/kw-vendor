@@ -47,3 +47,19 @@ func TestCompressedDecodeOIDNumericRawFloat64Layout(t *testing.T) {
 		t.Fatalf("expected raw float64 layout to decode to 5.5, got %#v", got)
 	}
 }
+
+func TestCompressedDecodeOIDInt8WithInt4Storage(t *testing.T) {
+	var payload [4]byte
+	binary.LittleEndian.PutUint32(payload[:], uint32(10))
+
+	gotOID := compressedDecodeOID(oid.T_int8, uint32(len(payload)))
+	if gotOID != oid.T_int4 {
+		t.Fatalf("expected decode OID %v, got %v", oid.T_int4, gotOID)
+	}
+
+	kdc := &KwDataChunk{}
+	got := kdc.DepressGetData(nil, 0, 0, gotOID, formatBinary, nil, payload[:])
+	if got != int64(10) {
+		t.Fatalf("expected int4 storage to decode to 10, got %#v", got)
+	}
+}

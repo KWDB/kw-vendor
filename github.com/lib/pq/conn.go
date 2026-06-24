@@ -1583,6 +1583,9 @@ func compressedDecodeOID(resultOID oid.Oid, rawLen uint32) oid.Oid {
 	if resultOID == oid.T_numeric && rawLen == 8 {
 		return oid.T_float8
 	}
+	if resultOID == oid.T_int8 && rawLen == 4 {
+		return oid.T_int4
+	}
 	return resultOID
 }
 
