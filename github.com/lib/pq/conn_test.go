@@ -15,7 +15,7 @@ func TestDecodeCompressedNumericIntLayout(t *testing.T) {
 	binary.LittleEndian.PutUint64(payload[1:], uint64(11))
 
 	kdc := &KwDataChunk{}
-	got := kdc.DepressGetData(nil, 0, 0, oid.T_numeric, formatBinary, nil, payload[:])
+	got := kdc.DepressGetData(nil, 0, 0, 0, 0, oid.T_numeric, formatBinary, nil, payload[:])
 	if got != int64(11) {
 		t.Fatalf("expected numeric int layout to decode to 11, got %#v", got)
 	}
@@ -27,7 +27,7 @@ func TestDecodeCompressedNumericFloatLayout(t *testing.T) {
 	binary.LittleEndian.PutUint64(payload[1:], math.Float64bits(3.5))
 
 	kdc := &KwDataChunk{}
-	got := kdc.DepressGetData(nil, 0, 0, oid.T_numeric, formatBinary, nil, payload[:])
+	got := kdc.DepressGetData(nil, 0, 0, 0, 0, oid.T_numeric, formatBinary, nil, payload[:])
 	if got != float64(3.5) {
 		t.Fatalf("expected numeric float layout to decode to 3.5, got %#v", got)
 	}
@@ -43,7 +43,7 @@ func TestCompressedDecodeOIDNumericRawFloat64Layout(t *testing.T) {
 	}
 
 	kdc := &KwDataChunk{}
-	got := kdc.DepressGetData(nil, 0, 0, gotOID, formatBinary, nil, payload[:])
+	got := kdc.DepressGetData(nil, 0, 0, 0, 0, gotOID, formatBinary, nil, payload[:])
 	if got != float64(5.5) {
 		t.Fatalf("expected raw float64 layout to decode to 5.5, got %#v", got)
 	}
@@ -59,7 +59,7 @@ func TestCompressedDecodeOIDInt8WithInt4Storage(t *testing.T) {
 	}
 
 	kdc := &KwDataChunk{}
-	got := kdc.DepressGetData(nil, 0, 0, gotOID, formatBinary, nil, payload[:])
+	got := kdc.DepressGetData(nil, 0, 0, 0, 0, gotOID, formatBinary, nil, payload[:])
 	if got != int64(10) {
 		t.Fatalf("expected int4 storage to decode to 10, got %#v", got)
 	}
@@ -69,14 +69,14 @@ func TestDecodeCompressedFloat4FormattingValues(t *testing.T) {
 	binary.LittleEndian.PutUint32(payload[:], math.Float32bits(float32(1.1)))
 
 	kdc := &KwDataChunk{}
-	got := kdc.DepressGetData(nil, 0, 0, oid.T_float4, formatBinary, nil, payload[:])
+	got := kdc.DepressGetData(nil, 0, 0,  0, 0, oid.T_float4, formatBinary, nil, payload[:])
 	if _, ok := got.(float32); !ok {
 		t.Fatalf("expected ordinary compressed float4 to decode as float32, got %T", got)
 	}
 
 	binary.LittleEndian.PutUint32(payload[:], math.Float32bits(math.MaxFloat32))
 
-	got = kdc.DepressGetData(nil, 0, 0, oid.T_float4, formatBinary, nil, payload[:])
+	got = kdc.DepressGetData(nil, 0, 0, 0, 0, oid.T_float4, formatBinary, nil, payload[:])
 	if _, ok := got.(float64); !ok {
 		t.Fatalf("expected max compressed float4 to decode as float64, got %T", got)
 	}
@@ -91,8 +91,9 @@ func TestDecodeCompressedTimestampUsesUTC(t *testing.T) {
 	binary.LittleEndian.PutUint64(payload[:], uint64(ts))
 
 	kdc := &KwDataChunk{}
-	got := kdc.DepressGetData(nil, 0, 0, oid.T_timestamptz, formatBinary, nil, payload[:])
+	got := kdc.DepressGetData(nil, 0, 0, 3, 0, oid.T_timestamptz, formatBinary, nil, payload[:])
 	if string(got.([]byte)) != "2026-06-10 08:00:00+00:00" {
 		t.Fatalf("expected UTC timestamp text, got %#v", got)
 	}
 }
+
