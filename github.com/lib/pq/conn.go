@@ -1451,7 +1451,7 @@ func (rs *rows) Tag() string {
 
 type KwDataChunk struct {
 	data            *readBuf
-	timezone        int
+	timezone        int16
 	rowNum          int
 	colNum          int
 	rowSize         int
@@ -1533,7 +1533,7 @@ func compressedFormatTime(ts int64, p int) time.Time {
 }
 
 
-func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, timezone int, row uint32, precision int, col int, typ oid.Oid, f format, length *int64) interface{} {
+func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, timezone int16, row uint32, precision int, col int, typ oid.Oid, f format, length *int64) interface{} {
 	start := row*kdc.storageLen[col] + kdc.colBlockOffset[col]
 	if int(start) > len(*kdc.data) {
 
@@ -1543,7 +1543,7 @@ func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, timezone int, 
 	case oid.T_timestamptz, oid.T_date:
 		timestamp := int64(binary.LittleEndian.Uint64(s))
 		t := compressedFormatTime(timestamp, precision)
-		loc := time.FixedZone("Custom", timezone*3600)
+		loc := time.FixedZone("Custom", int(timezone)*3600)
 		t = t.In(loc)
 		return compressedFormatTimestampTz(t)
 	case oid.T_timestamp:
@@ -1585,12 +1585,12 @@ func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, timezone int, 
 	}
 }
 
-func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, timezone int, row uint32, precision int, col int, typ oid.Oid, f format, length *int64, s []byte) interface{} {
+func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, timezone int16, row uint32, precision int, col int, typ oid.Oid, f format, length *int64, s []byte) interface{} {
 	switch typ {
 	case oid.T_timestamptz, oid.T_date:
 		timestamp := int64(binary.LittleEndian.Uint64(s))
 		t := compressedFormatTime(timestamp, precision)
-		loc := time.FixedZone("Custom", timezone*3600)
+		loc := time.FixedZone("Custom", int(timezone)*3600)
 		t = t.In(loc)
 		return compressedFormatTimestampTz(t)
 	case oid.T_timestamp:
@@ -1735,7 +1735,7 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 		case 'M':
 			rs.canMulRow = true
 			rs.trunk.Reset()
-			rs.trunk.timezone = rs.rb.int16()
+			rs.trunk.timezone = int16(rs.rb.int16())
 			rs.trunk.rowNum = rs.rb.int32()
 			rs.trunk.colNum = rs.rb.int16()
 			rs.trunk.rowSize = rs.rb.int32()
