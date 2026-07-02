@@ -936,6 +936,9 @@ func (f *file) lintValueSpecDoc(vs *ast.ValueSpec, gd *ast.GenDecl, genDeclMissi
 }
 
 func (f *file) checkStutter(id *ast.Ident, thing string) {
+	if f.hasNolintNoStutterWarning() {
+		return
+	}
 	pkg, name := f.f.Name.Name, id.Name
 	if !ast.IsExported(name) {
 		// unexported name
@@ -1346,6 +1349,37 @@ func (f *file) lintErrorReturn() {
 	})
 }
 
+// hasNolintUnexportedReturn checks whether the function declaration's doc comment
+// contains the "// nolint:unexportedreturn" directive.
+func (f *file) hasNolintUnexportedReturn(fn *ast.FuncDecl) bool {
+	if fn.Doc == nil {
+		return false
+	}
+	for _, c := range fn.Doc.List {
+		if strings.Contains(c.Text, "nolint:unexportedreturn") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNolintNoStutterWarning checks whether the file's header comments
+// contain the "nolint:nostutterwarning" directive.
+func (f *file) hasNolintNoStutterWarning() bool {
+	for _, cg := range f.f.Comments {
+		// Only check comments before the package declaration (file header)
+		if cg.Pos() > f.f.Package {
+			break
+		}
+		for _, c := range cg.List {
+			if strings.Contains(c.Text, "nolint:nostutterwarning") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // lintUnexportedReturn examines exported function declarations.
 // It complains if any return an unexported type.
 func (f *file) lintUnexportedReturn() {
@@ -1353,6 +1387,9 @@ func (f *file) lintUnexportedReturn() {
 		fn, ok := n.(*ast.FuncDecl)
 		if !ok {
 			return true
+		}
+		if f.hasNolintUnexportedReturn(fn) {
+			return false
 		}
 		if fn.Type.Results == nil {
 			return false
