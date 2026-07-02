@@ -1349,8 +1349,6 @@ func (f *file) lintErrorReturn() {
 	})
 }
 
-// lintUnexportedReturn examines exported function declarations.
-// It complains if any return an unexported type.
 // hasNolintUnexportedReturn checks whether the function declaration's doc comment
 // contains the "// nolint:unexportedreturn" directive.
 func (f *file) hasNolintUnexportedReturn(fn *ast.FuncDecl) bool {
@@ -1382,6 +1380,8 @@ func (f *file) hasNolintNoStutterWarning() bool {
 	return false
 }
 
+// lintUnexportedReturn examines exported function declarations.
+// It complains if any return an unexported type.
 func (f *file) lintUnexportedReturn() {
 	f.walk(func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
