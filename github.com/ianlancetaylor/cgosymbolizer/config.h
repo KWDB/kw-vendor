@@ -5,6 +5,8 @@
 #define BACKTRACE_ELF_SIZE 64
 #elif defined(__i386__) || defined(__arm__) || defined(__mips__) || defined(_ARCH_PPC)
 #define BACKTRACE_ELF_SIZE 32
+#elif defined(__riscv_xlen) && (__riscv_xlen == 64)
+#define BACKTRACE_ELF_SIZE 64
 #else
 #error BACKTRACE_ELF_SIZE unknown
 #endif

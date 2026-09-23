@@ -2,12 +2,14 @@ package pq
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -1449,9 +1451,11 @@ func (rs *rows) Tag() string {
 
 type KwDataChunk struct {
 	data            *readBuf
+	timezone        int16
 	rowNum          int
 	colNum          int
 	rowSize         int
+	timePrecision   []int
 	storageLen      []uint32
 	colBlockOffset  []uint32
 	ifVar           []uint32
@@ -1468,29 +1472,99 @@ func trimCString(s string) string {
 	return s
 }
 
-func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, row uint32, col int, typ oid.Oid, f format, length *int64) interface{} {
+func compressedFixedStringData(s []byte) []byte {
+	if len(s) < 2 {
+		return nil
+	}
+	length := int(binary.LittleEndian.Uint16(s[:2]))
+	if length > len(s)-2 {
+		length = len(s) - 2
+	}
+	return s[2 : 2+length]
+}
+
+func compressedVarValue(typ oid.Oid, s []byte) interface{} {
+	switch typ {
+	case oid.T_bytea, oid.T_varbytea:
+		return `\x` + hex.EncodeToString(s)
+	default:
+		return string(s)
+	}
+}
+
+func compressedFormatTimestampTz(t time.Time) []byte {
+	b := FormatTimestamp(t)
+	if len(b) > 0 && b[len(b)-1] == 'Z' {
+		b = append(b[:len(b)-1], "+00:00"...)
+	}
+	return b
+}
+
+func compressedFormatTimestamp(t time.Time) []byte {
+	b := FormatTimestamp(t)
+	if len(b) > 0 {
+		index := bytes.IndexByte(b, 'Z')
+		if index != -1 {
+			b = b[:index]
+		}
+	}
+	return b
+}
+
+func compressedFloat4Value(s []byte) interface{} {
+	v := math.Float32frombits(binary.LittleEndian.Uint32(s))
+	if v == float32(math.MaxFloat32) || v == -float32(math.MaxFloat32) {
+		return float64(v)
+	}
+	return v
+}
+
+func compressedFormatTime(ts int64, p int) time.Time {
+	switch p {
+	case 3:
+		return time.Unix(0, ts*int64(time.Millisecond))
+	case 6:
+		return time.Unix(0, ts*int64(time.Microsecond))
+	case 9:
+		return time.Unix(0, ts)
+	default:
+		return time.Unix(ts, 0)
+	}
+}
+
+
+func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, timezone int16, row uint32, precision int, col int, typ oid.Oid, f format, length *int64) interface{} {
 	start := row*kdc.storageLen[col] + kdc.colBlockOffset[col]
 	if int(start) > len(*kdc.data) {
 
 	}
 	s := (*kdc.data)[start : start+kdc.storageLen[col]]
 	switch typ {
-	case oid.T_timestamptz, oid.T_timestamp, oid.T_date:
+	case oid.T_timestamptz, oid.T_date:
 		timestamp := int64(binary.LittleEndian.Uint64(s))
-		t := time.Unix(0, timestamp*int64(time.Millisecond))
-		return FormatTimestamp(t)
+		t := compressedFormatTime(timestamp, precision)
+		loc := time.FixedZone("Custom", int(timezone)*3600)
+		t = t.In(loc)
+		return compressedFormatTimestampTz(t)
+	case oid.T_timestamp:
+		timestamp := int64(binary.LittleEndian.Uint64(s))
+		t := compressedFormatTime(timestamp, precision)
+		t = t.UTC()
+		return compressedFormatTimestamp(t)
 	case oid.T_time, oid.T_timetz:
 		micros := int64(binary.LittleEndian.Uint64(s))
 		return time.Unix(0, micros*1000).UTC() // nanosecond precision
 	case oid.T_bool:
 		return s[0] == 1
 	case oid.T_float4:
-		return math.Float32frombits(binary.LittleEndian.Uint32(s))
+		return compressedFloat4Value(s)
 	case oid.T_float8:
 		return math.Float64frombits(binary.LittleEndian.Uint64(s))
-	case oid.T_varchar, oid.T_text, oid.T_bpchar:
-		result := trimCString(string(s[2:]))
-		return result
+	// Custom OIDs: 91002=NCHAR, 91004=NVARCHAR, 91008=GEOMETRY.
+	case oid.T_varchar, oid.T_text, oid.T_bpchar, oid.Oid(91002), oid.Oid(91004), oid.Oid(91008):
+		return string(compressedFixedStringData(s))
+	case oid.T_bytea, oid.T_varbytea:
+		return `\x` + hex.EncodeToString(compressedFixedStringData(s))
 	case oid.T_int2: // int16
 		return int64(int16(binary.LittleEndian.Uint16(s)))
 	case oid.T_int4:
@@ -1511,24 +1585,33 @@ func (kdc *KwDataChunk) GetData(parameterStatus *parameterStatus, row uint32, co
 	}
 }
 
-func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, row uint32, col int, typ oid.Oid, f format, length *int64, s []byte) interface{} {
+func (kdc *KwDataChunk) DepressGetData(parameterStatus *parameterStatus, timezone int16, row uint32, precision int, col int, typ oid.Oid, f format, length *int64, s []byte) interface{} {
 	switch typ {
-	case oid.T_timestamptz, oid.T_timestamp, oid.T_date:
+	case oid.T_timestamptz, oid.T_date:
 		timestamp := int64(binary.LittleEndian.Uint64(s))
-		t := time.Unix(0, timestamp*int64(time.Millisecond))
-		return FormatTimestamp(t)
+		t := compressedFormatTime(timestamp, precision)
+		loc := time.FixedZone("Custom", int(timezone)*3600)
+		t = t.In(loc)
+		return compressedFormatTimestampTz(t)
+	case oid.T_timestamp:
+		timestamp := int64(binary.LittleEndian.Uint64(s))
+		t := compressedFormatTime(timestamp, precision)
+		t = t.UTC()
+		return compressedFormatTimestamp(t)
 	case oid.T_time, oid.T_timetz:
 		micros := int64(binary.LittleEndian.Uint64(s))
 		return time.Unix(0, micros*1000).UTC() // nanosecond precision
 	case oid.T_bool:
 		return s[0] == 1
 	case oid.T_float4:
-		return math.Float32frombits(binary.LittleEndian.Uint32(s))
+		return compressedFloat4Value(s)
 	case oid.T_float8:
 		return math.Float64frombits(binary.LittleEndian.Uint64(s))
-	case oid.T_varchar, oid.T_text, oid.T_bpchar:
-		result := trimCString(string(s[2:]))
-		return result
+	// Custom OIDs: 91002=NCHAR, 91004=NVARCHAR, 91008=GEOMETRY.
+	case oid.T_varchar, oid.T_text, oid.T_bpchar, oid.Oid(91002), oid.Oid(91004), oid.Oid(91008):
+		return string(compressedFixedStringData(s))
+	case oid.T_bytea, oid.T_varbytea:
+		return `\x` + hex.EncodeToString(compressedFixedStringData(s))
 	case oid.T_int2: // int16
 		return int64(int16(binary.LittleEndian.Uint16(s)))
 	case oid.T_int4:
@@ -1558,6 +1641,9 @@ func compressedDecodeOID(resultOID oid.Oid, rawLen uint32) oid.Oid {
 	if resultOID == oid.T_numeric && rawLen == 8 {
 		return oid.T_float8
 	}
+	if resultOID == oid.T_int8 && rawLen == 4 {
+		return oid.T_int4
+	}
 	return resultOID
 }
 
@@ -1567,7 +1653,7 @@ func (kdc *KwDataChunk) Next(parameterStatus *parameterStatus, head *rowsHeader,
 	}
 	// get one row from bufffer
 	for i := range dest {
-		dest[i] = kdc.GetData(parameterStatus, kdc.currentLine, i, head.colTyps[i].OID, head.colFmts[i], nil)
+		dest[i] = kdc.GetData(parameterStatus, kdc.timezone, kdc.currentLine, kdc.timePrecision[i], i, head.colTyps[i].OID, head.colFmts[i], nil)
 	}
 	kdc.currentLine++
 	return
@@ -1649,6 +1735,7 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 		case 'M':
 			rs.canMulRow = true
 			rs.trunk.Reset()
+			rs.trunk.timezone = int16(rs.rb.int16())
 			rs.trunk.rowNum = rs.rb.int32()
 			rs.trunk.colNum = rs.rb.int16()
 			rs.trunk.rowSize = rs.rb.int32()
@@ -1658,6 +1745,7 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 			}
 
 			for i := 0; i < int(rs.trunk.colNum); i++ {
+				rs.trunk.timePrecision = append(rs.trunk.timePrecision, rs.rb.int32())
 				rs.trunk.storageLen = append(rs.trunk.storageLen, uint32(rs.rb.int32()))
 				rs.trunk.colBlockOffset = append(rs.trunk.colBlockOffset, uint32(rs.rb.int32()))
 				rs.trunk.ifVar = append(rs.trunk.ifVar, uint32(rs.rb.int32()))
@@ -1703,20 +1791,38 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 				decodeOID := compressedDecodeOID(resultOID, storageLen)
 				if rs.trunk.ifVar[col] == 1 {
 					for row := 0; row < chunk.counter; row++ {
-						newdata := chunk.data[0:storageLen]
+						if uint32(len(chunk.data)) < storageLen {
+							return fmt.Errorf("pq: compressed column %d row %d is shorter than storage length %d", col, row, storageLen)
+						}
+						newdata := chunk.data[:storageLen]
 						chunk.data = chunk.data[storageLen:]
-						varloc := int64(int32(binary.LittleEndian.Uint32(newdata)))
-						varlenString := newVarString[varloc : varloc+2]
-						varloclen := int64(int16(binary.LittleEndian.Uint16(varlenString)))
-						result := trimCString(string(newVarString[varloc+2 : varloc+2+varloclen]))
-						rs.trunk.ResultRows[col][row] = result
+						if chunk.isNull(row) {
+							rs.trunk.ResultRows[col][row] = nil
+							continue
+						}
+						if len(newdata) < 4 {
+							return fmt.Errorf("pq: compressed variable column %d has storage length %d", col, storageLen)
+						}
+						varloc := binary.LittleEndian.Uint32(newdata[:4])
+						rawValue, varErr := compressedVarData(newVarString, varloc)
+						if varErr != nil {
+							return varErr
+						}
+						rs.trunk.ResultRows[col][row] = compressedVarValue(resultOID, rawValue)
 					}
 				} else {
 					for row := 0; row < chunk.counter; row++ {
-						newdata := chunk.data[0:storageLen]
+						if uint32(len(chunk.data)) < storageLen {
+							return fmt.Errorf("pq: compressed column %d row %d is shorter than storage length %d", col, row, storageLen)
+						}
+						newdata := chunk.data[:storageLen]
 						chunk.data = chunk.data[storageLen:]
+						if chunk.isNull(row) {
+							rs.trunk.ResultRows[col][row] = nil
+							continue
+						}
 						rs.trunk.ResultRows[col][row] = rs.trunk.DepressGetData(
-							&conn.parameterStatus, rs.trunk.currentLine, col, decodeOID,
+							&conn.parameterStatus, rs.trunk.timezone, rs.trunk.currentLine, rs.trunk.timePrecision[col], col, decodeOID,
 							formatCode, nil, newdata,
 						)
 					}
@@ -1740,16 +1846,34 @@ func (rs *rows) Next(dest []driver.Value) (err error) {
 }
 
 type DataChunk struct {
-	data    []byte
-	counter int
+	data       []byte
+	nullBitmap []byte
+	counter    int
 }
 
-type DataChunkPtr *DataChunk
+type DataChunkPtr = *DataChunk
+
+func (chunk *DataChunk) isNull(row int) bool {
+	byteIndex := row >> 3
+	return byteIndex < len(chunk.nullBitmap) &&
+		chunk.nullBitmap[byteIndex]&(1<<uint(row&7)) != 0
+}
+
+func compressedVarData(data []byte, offset uint32) ([]byte, error) {
+	start := int(offset)
+	if start < 0 || start > len(data)-2 {
+		return nil, fmt.Errorf("pq: invalid compressed variable offset %d", offset)
+	}
+	length := int(binary.LittleEndian.Uint16(data[start : start+2]))
+	start += 2
+	if length > len(data)-start {
+		return nil, fmt.Errorf("pq: invalid compressed variable length %d", length)
+	}
+	return data[start : start+length], nil
+}
 
 // DeserializeChunk is the core deserialization function.
 func DeserializeChunk(uncompressedSize int, compressedSize int, numRows int, capacity int, offset int, pchunk []byte, CompressionType int) (DataChunkPtr, error) {
-	var chunk DataChunkPtr
-
 	uncompressedBuffer := make([]byte, uncompressedSize)
 	if compressedSize > 0 {
 		err := DecompressBlock(pchunk, uncompressedBuffer, CompressionType)
@@ -1757,12 +1881,14 @@ func DeserializeChunk(uncompressedSize int, compressedSize int, numRows int, cap
 			return nil, err
 		}
 	}
-	if chunk == nil {
-		chunk = createDataChunk(uncompressedSize, numRows)
-		if chunk == nil {
-			return nil, errors.New("pq: can not create chunks")
-		}
+	if offset < 0 || offset > len(uncompressedBuffer) {
+		return nil, fmt.Errorf("pq: invalid compressed column offset %d", offset)
 	}
+	chunk := createDataChunk(uncompressedSize-offset, numRows)
+	if chunk == nil {
+		return nil, errors.New("pq: can not create chunks")
+	}
+	chunk.nullBitmap = append(chunk.nullBitmap, uncompressedBuffer[:offset]...)
 	copy(chunk.data, uncompressedBuffer[offset:])
 
 	return chunk, nil

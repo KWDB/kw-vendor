@@ -1170,7 +1170,16 @@ func stepLeader(r *raft, m pb.Message) error {
 				// replicate, or when freeTo() covers multiple messages). If
 				// we have more entries to send, send as many messages as we
 				// can (without sending empty messages for the commit index)
+				// by fyx: add a send burst timeout. Sending a large batch of log entries (e.g., 64KB)
+				// can exceed the raft heartbeat interval, which may cause followers to start a new term.
+				// We limit the total time spent in the send loop to prevent this.
+				const maxSendBurstDuration = 2 * time.Second
+				startTime := time.Now()
 				for r.maybeSendAppend(m.From, false) {
+					if time.Since(startTime) >= maxSendBurstDuration {
+						r.logger.Debugf("%x stopping send burst to %x after %v", r.id, m.From, maxSendBurstDuration)
+						break
+					}
 				}
 				// Transfer leadership is in progress.
 				if m.From == r.leadTransferee && pr.Match == r.raftLog.lastIndex() {
