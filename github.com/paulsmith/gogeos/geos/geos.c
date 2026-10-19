@@ -24,13 +24,21 @@ static GEOSWKTWriter* (*GEOSWKTWriter_create_r_func)(GEOSContextHandle_t handle)
 static void (*GEOSWKTWriter_destroy_r_func)(GEOSContextHandle_t handle, GEOSWKTWriter* writer) = NULL;
 static char* (*GEOSWKTWriter_write_r_func)(GEOSContextHandle_t handle, GEOSWKTWriter* writer, const GEOSGeometry* g) = NULL;
 
+#if defined(_WIN32) || defined(__MINGW32__)
+  static const char * PRIMARY_GOEOS_LIBRARY = "libgeos_c.dll";
+  static const char * SECONDARY_GOEOS_LIBRARY = "libgeos.dll"; 
+#else
+  static const char * PRIMARY_GOEOS_LIBRARY = "libgeos_c.so";
+  static const char * SECONDARY_GOEOS_LIBRARY = "libgeos.so";
+#endif
+
 // init libgeos_c.so
 void* initGEOSLibrary() {
     pthread_mutex_lock(&geosLibraryMutex);
-    geos_library = dlopen("libgeos_c.so", RTLD_NOW | RTLD_GLOBAL);
+    geos_library = dlopen(PRIMARY_GOEOS_LIBRARY, RTLD_NOW | RTLD_GLOBAL);
     if (geos_library == NULL) {
         // if load libgeos_c.so failed，load libgeos.so
-        geos_library = dlopen("libgeos.so", RTLD_NOW | RTLD_GLOBAL);
+        geos_library = dlopen(SECONDARY_GOEOS_LIBRARY, RTLD_NOW | RTLD_GLOBAL);
     }
     if (geos_library == NULL) {
         // if load libgeos.so failed，load libgeos_c.so.1
