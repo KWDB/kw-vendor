@@ -34,7 +34,7 @@ import (
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/date"
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt"
 )
 
 const (
@@ -150,7 +150,7 @@ func (t Token) WillExpireIn(d time.Duration) bool {
 	return !t.Expires().After(time.Now().Add(d))
 }
 
-//OAuthToken return the current access token
+// OAuthToken return the current access token
 func (t *Token) OAuthToken() string {
 	return t.AccessToken
 }
